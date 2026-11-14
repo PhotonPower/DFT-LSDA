@@ -100,6 +100,16 @@ PWBasis make_pw_basis(const Crystal& c, const KPoint& k, double ecut, const FFT3
         b.kg.insert(b.kg.end(), q, q + 3);
       }
   b.npw = static_cast<int>(b.idx.size());
+  std::vector<char> col(static_cast<size_t>(coarse.n(0)) * coarse.n(1), 0), pl(coarse.n(0), 0);
+  for (size_t i : b.idx) {
+    const size_t c = i / coarse.n(2);
+    col[c] = 1;
+    pl[c / coarse.n(1)] = 1;
+  }
+  for (size_t c = 0; c < col.size(); ++c)
+    if (col[c]) b.columns.push_back(static_cast<int>(c));
+  for (size_t i1 = 0; i1 < pl.size(); ++i1)
+    if (pl[i1]) b.planes.push_back(static_cast<int>(i1));
   return b;
 }
 

@@ -18,6 +18,7 @@ struct RelaxParams {
 
 struct RelaxResult {
   bool converged = false;
+  bool stopped = false;  // interrupted by the wall-time limit
   int steps = 0;
   double max_force = 0;
   std::vector<Vec3> forces;
@@ -40,6 +41,7 @@ struct CellRelaxParams {
 
 struct CellRelaxResult {
   bool converged = false;
+  bool stopped = false;
   int steps = 0;
   Mat3 stress{};
   std::vector<Vec3> forces;

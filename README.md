@@ -18,7 +18,7 @@ B2-Aluminiden NiAl und FeAl, aber allgemein für periodische Kristalle einsetzba
 | SCF | Pulay/Anderson-Mischung von Dichte, Magnetisierung und PAW-Dichtematrizen, Kerker-Vorkonditionierung, Hartree-Metrik |
 | Kräfte / Relaxation | analytische Hellmann-Feynman-Kräfte (inkl. PAW-Terme), BFGS |
 | Spannungstensor / Zellrelaxation | analytischer PAW-Spannungstensor; geglätteter kinetischer Cutoff (`ecut_smooth`), damit die Spannung die exakte Ableitung der Energie bei konstantem Cutoff ist; Quasi-Newton-Relaxation von Zelle und Atomen auf Zieldruck |
-| Beschleunigung | FFTW (ein Plan, threadsichere Ausführung pro Band), BLAS-3 für alle Blockoperationen, OpenMP |
+| Beschleunigung | FFTW mit ausgedünnter 3D-Transformation für Wellenfunktionen (nur Spalten/Ebenen der G-Kugel, 1,4–1,8× schneller als die volle FFT), BLAS-3 für alle Blockoperationen, OpenMP |
 
 Energien sind absolute Frozen-Core-Gesamtenergien (inklusive Rumpfbeiträgen der Datensätze),
 alle internen Größen in Hartree-Atomeinheiten.
@@ -79,7 +79,9 @@ end
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
 | `cell_steps`, `cell_modulus`, `max_strain` | 30, 300 GPa, 0.03 | Schritte, Start-Steifigkeit und maximale Dehnung pro Schritt |
 | `prefix` | `lsda` | Name der Ergebnisdatei `<prefix>.json` und des Checkpoints `<prefix>.chk` |
-| `restart` | `false` | Positionen, Dichte und PAW-Dichtematrizen aus `<prefix>.chk` übernehmen (falls vorhanden und kompatibel) |
+| `restart` | `false` | Zustand aus `<prefix>.chk` übernehmen (falls vorhanden und kompatibel): Positionen, bei `cellrelax` auch die Zelle, Dichte, Dichtematrizen, Wellenfunktionen und – bei unterbrochenem SCF – die Pulay-Historie |
+| `max_seconds` | 0 (kein Limit) | Wandzeitlimit des Laufs: sauberer Abbruch mit Checkpoint, Exit-Code 4; mit `restart = true` geht es nahtlos weiter |
+| `checkpoint_wfc` | `true` | Wellenfunktionen im Checkpoint speichern (groß; ohne sie startet der Neustart per LCAO) |
 | `pseudo_dir` | Verzeichnis der Eingabe | Ort der PAW-Datensätze |
 | `units`, `scale` | `bohr`, 1 | Einheit und Skalierungsfaktor der Gittervektoren |
 | `coordinates` | `fractional` | oder `cartesian` (in `units`·`scale`) |
@@ -126,6 +128,19 @@ cd examples/defects
 ./run_defects.sh Ni 2.834 3 "4 4 4"          # NiAl, 54-Atom-Superzelle
 ./run_defects.sh Fe 2.813 3 "4 4 4" 2 1.0    # FeAl, spinpolarisiert (Startmoment 1 µB)
 ```
+
+## Rechnen in Zeitscheiben (ohne Server)
+
+Mit `max_seconds` lässt sich jede Rechnung in kurze Stücke teilen; jeder Aufruf setzt dort fort, wo der
+letzte aufgehört hat:
+
+```sh
+cd examples/defects
+MAX_SECONDS=300 ECUT=20 ./run_defects.sh Ni 2.840 2 "4 4 4"   # so oft aufrufen, bis thermo.txt erscheint
+```
+
+Für eine einzelne Eingabe: `max_seconds = 300` und `restart = true` setzen und `lsda` wiederholt starten,
+bis der Exit-Code nicht mehr 4 ist.
 
 ## Rechnen auf einem Server
 
@@ -187,7 +202,7 @@ tests         Unit- und Regressionstests
 * Spannungen sind nur so gut konvergiert wie der Cutoff: Ni/Fe mit Semicore brauchen dafür ≥ 25–30 Ha
   (bei 20 Ha ist P(V) für NiAl noch auf ~1 GPa rau). Ohne `ecut_smooth` gilt die Spannung für die feste
   Basis und enthält nicht die Pulay-Spannung.
-* Neustart übernimmt Dichte und Positionen, aber keine Wellenfunktionen (die werden per LCAO neu erzeugt; ~3 SCF-Schritte).
+* Nach einem Neustart einer Relaxation beginnt die BFGS-Hesse-Matrix neu (Positionen, Dichte und Wellenfunktionen bleiben erhalten).
 * Parallelisierung nur über Threads (OpenMP + Thread-BLAS).
 * Die Defekt-Thermodynamik berücksichtigt nur Konfigurationsentropie (keine Bildungsvolumina,
   keine Schwingungsentropie).

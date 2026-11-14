@@ -1,6 +1,8 @@
 // Density mixing: Pulay/Anderson (multisecant Broyden) acceleration with a diagonal preconditioner
 // (Kerker for the charge density) and a weighted inner product.
 #pragma once
+#include <cstdio>
+
 #include "base/common.hpp"
 
 namespace lsda {
@@ -16,6 +18,9 @@ class Mixer {
   std::vector<double> mix(const std::vector<double>& x_in, const std::vector<double>& x_out);
   void reset() { dx_.clear(); dr_.clear(); have_prev_ = false; }
   double dot(const std::vector<double>& a, const std::vector<double>& b) const;
+  // history for checkpoints (binary); load returns false and leaves an empty history on any mismatch
+  bool save(std::FILE* f) const;
+  bool load(std::FILE* f);
 
  private:
   std::vector<double> weight_, precond_;

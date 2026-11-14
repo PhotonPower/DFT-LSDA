@@ -161,6 +161,18 @@ def relax_and_restart(lsda, pseudo, tmp):
     check(de < 1e-8, "restart: same energy from checkpoint", de, 1e-8)
     check(again["scf_iterations"] < ideal["scf_iterations"], "restart: fewer SCF iterations",
           again["scf_iterations"], ideal["scf_iterations"])
+    # interrupted SCF (here: iteration limit; the wall-time limit max_seconds uses the same path):
+    # the checkpoint holds the unconverged density and wavefunctions, the restart must finish the job
+    with open(os.path.join(tmp, "cut.in"), "w") as f:
+        f.write(f"prefix = cut\npseudo_dir = {pseudo}\ntask = scf\nmax_scf = 5\n" + NIAL % "0.5")
+    part = subprocess.run([lsda, "cut.in"], cwd=tmp, capture_output=True, text=True)
+    done = run("cut", "task = scf\nrestart = true\n" + NIAL % "0.5")
+    if done is None:
+        return failures + 1
+    de = abs(done["free_energy"] - ideal["free_energy"])
+    check(part.returncode == 3 and done["converged"] and de < 1e-8, "restart of an interrupted SCF run", de, 1e-8)
+    check(done["scf_iterations"] + 5 <= ideal["scf_iterations"] + 3, "restart continues (no repeated work)",
+          done["scf_iterations"] + 5, ideal["scf_iterations"] + 3)
     return failures
 
 

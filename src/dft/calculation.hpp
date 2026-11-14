@@ -48,6 +48,9 @@ struct Params {
   double eig_tol_max = 1e-3;   // loosest residual norm
   // PAW
   int paw_ntheta = 7;          // angular quadrature for the on-site xc correction (2 n^2 points)
+  // run control
+  double max_seconds = 0.0;    // stop cleanly when the wall time of the run would exceed this (0: no limit)
+  bool checkpoint_wfc = true;  // store the wavefunctions in the checkpoint (large, but restarts are immediate)
   // misc
   unsigned seed = 20240;
   int verbosity = 1;
@@ -77,11 +80,13 @@ class Calculation {
   // Returns false (and leaves this object untouched) if the layouts differ.
   bool adopt_state(Calculation&& other);
 
-  // Checkpoint (atomic positions, pseudo density, PAW density matrices) for restarting SCF runs and
-  // relaxations. load_checkpoint returns false if the file is missing or incompatible.
+  // Checkpoint (atomic positions, pseudo density, PAW density matrices and optionally wavefunctions)
+  // for restarting SCF runs and relaxations. load_checkpoint returns false if the file is missing or incompatible.
   void save_checkpoint(const std::string& path) const;
+  bool stopped_by_time() const { return stopped_by_time_; }   // scf() was interrupted by max_seconds
+  bool scf_converged() const { return scf_converged_; }
   bool load_checkpoint(const std::string& path);
-  static bool read_checkpoint_positions(const std::string& path, int natoms, std::vector<Vec3>& frac);
+  static bool read_checkpoint_structure(const std::string& path, int natoms, std::vector<Vec3>& frac, Mat3& lattice);
 
   const Crystal& crystal() const { return c_; }
   const Energies& energies() const { return en_; }
@@ -162,6 +167,9 @@ class Calculation {
   int n_scf_ = 0;
   bool first_solve_ = true;
   bool lcao_start_ok_ = true;
+  bool stopped_by_time_ = false, scf_converged_ = false;
+  double last_dr2_ = 1.0;      // density residual of the last SCF iteration
+  double resume_dr2_ = -1.0;   // > 0: an interrupted SCF cycle is continued (from a checkpoint)
   bool restarted_ = false;   // density read from a checkpoint: converge the bands well in the first step
 };
 

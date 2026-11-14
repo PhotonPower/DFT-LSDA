@@ -108,9 +108,9 @@ void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
       cplx* hb = kx + static_cast<size_t>(ib) * npw;
       std::fill(work.begin(), work.end(), cplx(0.0));
       for (int ig = 0; ig < npw; ++ig) work[pw_.idx[ig]] = xb[ig];
-      fft_.backward(work.data());
+      fft_.backward_pruned(work.data(), pw_.columns, pw_.planes);
       for (size_t i = 0; i < ngrid; ++i) work[i] *= vloc_[i];
-      fft_.forward(work.data());
+      fft_.forward_pruned(work.data(), pw_.columns, pw_.planes);
       for (int ig = 0; ig < npw; ++ig) hb[ig] = pw_.kin[ig] * xb[ig] + inv_n * work[pw_.idx[ig]];
     }
   }

@@ -40,9 +40,12 @@ int main(int argc, char** argv) {
     bool restart_positions = false;
     if (inp.restart) {
       std::vector<Vec3> frac;
-      restart_positions = Calculation::read_checkpoint_positions(chk, inp.crystal.natoms(), frac);
-      if (restart_positions)
+      Mat3 lattice{};
+      restart_positions = Calculation::read_checkpoint_structure(chk, inp.crystal.natoms(), frac, lattice);
+      if (restart_positions) {
         for (int a = 0; a < inp.crystal.natoms(); ++a) inp.crystal.atoms[a].frac = frac[a];
+        if (inp.task == "cellrelax") inp.crystal.set_lattice(lattice);  // continue with the last cell
+      }
     }
     auto calc_ptr = std::make_unique<Calculation>(std::move(inp.crystal), inp.params);
     if (inp.restart) {
@@ -95,8 +98,19 @@ int main(int argc, char** argv) {
         logf("    %-4s %16.10f %16.10f %16.10f\n", calc.crystal().species[a.species].name.c_str(), a.frac[0], a.frac[1], a.frac[2]);
     } else {
       converged = calc.scf();
-      if (inp.task == "forces" || inp.task == "stress") forces = calc.forces();
+      if (!calc.stopped_by_time()) {
+        if (inp.task == "forces" || inp.task == "stress") forces = calc.forces();
+        calc.save_checkpoint(chk);
+      }
+    }
+    if (calc.stopped_by_time()) {
+      // interrupted by max_seconds: keep the state and leave; "restart = true" continues the run
       calc.save_checkpoint(chk);
+      write_results(json, calc, false, nullptr);
+      logf("\n  Stopped by the wall-time limit. Checkpoint written to %s; rerun with 'restart = true' to continue.\n", chk.c_str());
+      print_timings();
+      logf("\n  Total wall time: %.1f s\n", wall_time());
+      return 4;
     }
     if (!forces.empty()) print_forces(calc, forces);
     if (inp.stress) {

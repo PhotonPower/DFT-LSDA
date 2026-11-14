@@ -86,4 +86,46 @@ std::vector<double> Mixer::mix(const std::vector<double>& x_in, const std::vecto
   return x_new;
 }
 
+bool Mixer::save(std::FILE* f) const {
+  const long n = static_cast<long>(weight_.size()), m = have_prev_ ? static_cast<long>(dx_.size()) : -1;
+  bool ok = std::fwrite(&n, sizeof n, 1, f) == 1 && std::fwrite(&m, sizeof m, 1, f) == 1;
+  if (m < 0) return ok;
+  auto put = [&](const std::vector<double>& v) { ok = ok && std::fwrite(v.data(), sizeof(double), v.size(), f) == v.size(); };
+  put(x_prev_);
+  put(r_prev_);
+  for (long i = 0; i < m; ++i) {
+    put(dx_[i]);
+    put(dr_[i]);
+  }
+  return ok;
+}
+
+bool Mixer::load(std::FILE* f) {
+  reset();
+  long n = 0, m = 0;
+  if (std::fread(&n, sizeof n, 1, f) != 1 || std::fread(&m, sizeof m, 1, f) != 1) return false;
+  if (n != static_cast<long>(weight_.size()) || m > 64) return false;
+  if (m < 0) return true;
+  bool ok = true;
+  auto get = [&](std::vector<double>& v) {
+    v.resize(n);
+    ok = ok && std::fread(v.data(), sizeof(double), v.size(), f) == v.size();
+  };
+  std::vector<double> xp, rp;
+  std::vector<std::vector<double>> dx(m), dr(m);
+  get(xp);
+  get(rp);
+  for (long i = 0; i < m; ++i) {
+    get(dx[i]);
+    get(dr[i]);
+  }
+  if (!ok) return false;
+  x_prev_ = std::move(xp);
+  r_prev_ = std::move(rp);
+  dx_ = std::move(dx);
+  dr_ = std::move(dr);
+  have_prev_ = true;
+  return true;
+}
+
 }  // namespace lsda

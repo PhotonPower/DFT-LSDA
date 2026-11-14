@@ -40,6 +40,15 @@ class FFT3D {
 
   void forward(cplx* data) const;   // in place
   void backward(cplx* data) const;  // in place
+
+  // Pruned transforms for data whose reciprocal-space support is a sphere much smaller than the box
+  // (plane-wave coefficients on the wavefunction grid). `columns` lists the (i1 * n2 + i2) columns and
+  // `planes` the i1 planes that contain non-zero coefficients.
+  //   backward_pruned: data must be zero outside the listed columns; result is the full real-space array.
+  //   forward_pruned : input is a full real-space array; on exit only the listed columns are valid.
+  // Only the 1D transforms that can contribute are carried out (z for the columns, y for the planes, x for all).
+  void backward_pruned(cplx* data, const std::vector<int>& columns, const std::vector<int>& planes) const;
+  void forward_pruned(cplx* data, const std::vector<int>& columns, const std::vector<int>& planes) const;
   int n(int d) const { return n_[d]; }
   size_t size() const { return size_; }
   // FFT-box index of the integer reciprocal vector (m1,m2,m3); |m_d| must be < n_d/2 (+1)
@@ -53,6 +62,7 @@ class FFT3D {
   size_t size_ = 0;
   void* fwd_ = nullptr;
   void* bwd_ = nullptr;
+  void* line_[2][3] = {{nullptr, nullptr, nullptr}, {nullptr, nullptr, nullptr}};  // [direction][z, y-plane, x-all]
 };
 
 // smallest integer >= n whose prime factors are all in {2,3,5,7}

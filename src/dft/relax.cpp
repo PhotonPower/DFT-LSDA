@@ -16,6 +16,10 @@ RelaxResult relax(Calculation& calc, const RelaxParams& rp) {
   }
   for (int step = 0; step <= rp.max_steps; ++step) {
     const bool ok = calc.scf();
+    if (calc.stopped_by_time()) {
+      res.stopped = true;
+      break;
+    }
     if (!ok) logf("  WARNING: SCF not converged during relaxation step %d\n", step);
     res.forces = calc.forces();
     res.steps = step;
@@ -106,7 +110,11 @@ CellRelaxResult relax_cell(std::unique_ptr<Calculation>& calc, const RelaxParams
       res.forces = rr.forces;
     } else {
       calc->scf();
-      res.forces = calc->forces();
+      if (!calc->stopped_by_time()) res.forces = calc->forces();
+    }
+    if (calc->stopped_by_time()) {
+      res.stopped = true;
+      break;
     }
     res.stress = calc->stress();
     const double vol = calc->crystal().volume;

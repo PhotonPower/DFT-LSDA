@@ -655,7 +655,7 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
           std::fill(work.begin(), work.end(), cplx(0.0));
           const cplx* xn = x.col(n);
           for (int ig = 0; ig < b.npw; ++ig) work[b.idx[ig]] = xn[ig];
-          fft_c_.backward(work.data());
+          fft_c_.backward_pruned(work.data(), b.columns, b.planes);
           for (size_t i = 0; i < nc; ++i) acc[i] += w * std::norm(work[i]);
         }
         if (used) {
@@ -854,11 +854,15 @@ bool Calculation::scf() {
   Functional f_in = evaluate(rho_, D_, true);
   if (verbose)
     logf("\n  iter      free energy (Ha)     E_KS - E_Harris      |residual|^2    magnet.   eig.resid   time(s)\n");
-  double dr2 = 1.0, e_prev = 0.0;
+  double dr2 = resume_dr2_ > 0.0 ? resume_dr2_ : 1.0, e_prev = 0.0;
+  resume_dr2_ = -1.0;
   bool converged = false;
+  stopped_by_time_ = false;
+  scf_converged_ = false;
   const double t0 = wall_time();
   for (int iter = 1; iter <= p_.max_scf; ++iter) {
     n_scf_ = iter;
+    const double t_iter = wall_time();
     // eigensolver tolerance follows the density residual
     double tol = std::clamp(p_.eig_tol_factor * std::sqrt(dr2 / std::max(1.0, nelec_)), p_.eig_tol, p_.eig_tol_max);
     int eig_iters = first_solve_ ? p_.eig_max_iter_first : p_.eig_max_iter;
@@ -902,6 +906,7 @@ bool Calculation::scf() {
     std::vector<double> r(x_in.size());
     for (size_t i = 0; i < r.size(); ++i) r[i] = x_out[i] - x_in[i];
     dr2 = mixer_.dot(r, r);
+    last_dr2_ = dr2;
 
     if (verbose)
       logf("  %4d  %20.10f  %18.3e  %16.3e  %9.4f  %10.2e  %8.1f\n", iter, en_.free, e_ks - e_harris, dr2,
@@ -920,6 +925,16 @@ bool Calculation::scf() {
     const std::vector<double> x_new = mixer_.mix(x_in, x_out);
     unpack(x_new, rho_, D_);
     f_in = evaluate(rho_, D_, true);
+    // wall-time limit: stop if the next iteration would not fit (state is consistent for a restart)
+    if (p_.max_seconds > 0.0 && wall_time() + 1.2 * (wall_time() - t_iter) > p_.max_seconds && iter < p_.max_scf) {
+      stopped_by_time_ = true;
+      break;
+    }
+  }
+  scf_converged_ = converged;
+  if (stopped_by_time_) {
+    if (verbose) logf("\n  Wall-time limit (max_seconds = %.0f) reached after %d SCF iterations: stopping for restart\n", p_.max_seconds, n_scf_);
+    return false;
   }
   if (verbose) {
     logf(converged ? "\n  SCF converged in %d iterations\n" : "\n  WARNING: SCF NOT converged after %d iterations\n", n_scf_);
@@ -1029,10 +1044,10 @@ bool Calculation::adopt_state(Calculation&& o) {
 //  Checkpoints
 // =====================================================================================
 namespace {
-const char chk_magic[8] = {'L', 'S', 'D', 'A', 'C', 'H', 'K', '1'};
+const char chk_magic[8] = {'L', 'S', 'D', 'A', 'C', 'H', 'K', '2'};
 struct ChkHeader {
   char magic[8];
-  int nspin, nat, ng, reserved;
+  int nspin, nat, ng, scf_converged;
   double ecut_dense;
   double lattice[9];
 };
@@ -1052,6 +1067,7 @@ void Calculation::save_checkpoint(const std::string& path) const {
     h.nspin = nspin_;
     h.nat = c_.natoms();
     h.ng = gs_.ng;
+    h.scf_converged = scf_converged_ ? 1 : 0;
     h.ecut_dense = p_.ecut_dense;
     for (int i = 0; i < 3; ++i)
       for (int j = 0; j < 3; ++j) h.lattice[3 * i + j] = c_.A[i][j];
@@ -1063,16 +1079,38 @@ void Calculation::save_checkpoint(const std::string& path) const {
       ok = ok && std::fwrite(&ni, sizeof ni, 1, fc.f) == 1;
       for (int s = 0; s < nspin_; ++s) ok = ok && std::fwrite(D_[a][s].data(), sizeof(double), D_[a][s].size(), fc.f) == D_[a][s].size();
     }
+    // wavefunctions (optional): per k-point the integer G vectors, per spin eigenvalues and coefficients
+    const int has_wfc = p_.checkpoint_wfc && !first_solve_ ? 1 : 0, nk = static_cast<int>(basis_.size());
+    ok = ok && std::fwrite(&has_wfc, sizeof has_wfc, 1, fc.f) == 1;
+    if (has_wfc) {
+      ok = ok && std::fwrite(&nk, sizeof nk, 1, fc.f) == 1 && std::fwrite(&nbands_, sizeof nbands_, 1, fc.f) == 1;
+      for (int ik = 0; ik < nk && ok; ++ik) {
+        const PWBasis& b = basis_[ik];
+        ok = ok && std::fwrite(b.kfrac.data(), sizeof(double), 3, fc.f) == 3 && std::fwrite(&b.npw, sizeof b.npw, 1, fc.f) == 1 &&
+             std::fwrite(b.mill.data(), sizeof(int), b.mill.size(), fc.f) == b.mill.size();
+        for (int s = 0; s < nspin_ && ok; ++s) {
+          const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
+          ok = ok && std::fwrite(eig_[ks].data(), sizeof(double), nbands_, fc.f) == static_cast<size_t>(nbands_) &&
+               std::fwrite(psi_[ks].data(), sizeof(cplx), psi_[ks].size(), fc.f) == psi_[ks].size();
+        }
+      }
+    }
+    // unfinished SCF cycle: residual and Pulay history, so that a restart continues where it stopped
+    const int has_mixer = has_wfc && !scf_converged_ ? 1 : 0;
+    ok = ok && std::fwrite(&has_mixer, sizeof has_mixer, 1, fc.f) == 1;
+    if (has_mixer) ok = ok && std::fwrite(&last_dr2_, sizeof last_dr2_, 1, fc.f) == 1 && mixer_.save(fc.f);
     LSDA_CHECK(ok, "error while writing checkpoint '" + tmp + "'");
   }
   LSDA_CHECK(std::rename(tmp.c_str(), path.c_str()) == 0, "cannot rename checkpoint to '" + path + "'");
 }
 
-bool Calculation::read_checkpoint_positions(const std::string& path, int natoms, std::vector<Vec3>& frac) {
+bool Calculation::read_checkpoint_structure(const std::string& path, int natoms, std::vector<Vec3>& frac, Mat3& lattice) {
   FileCloser fc{std::fopen(path.c_str(), "rb")};
   if (!fc.f) return false;
   ChkHeader h{};
   if (std::fread(&h, sizeof h, 1, fc.f) != 1 || std::memcmp(h.magic, chk_magic, 8) != 0 || h.nat != natoms) return false;
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) lattice[i][j] = h.lattice[3 * i + j];
   frac.resize(natoms);
   for (Vec3& v : frac)
     if (std::fread(v.data(), sizeof(double), 3, fc.f) != 3) return false;
@@ -1110,8 +1148,53 @@ bool Calculation::load_checkpoint(const std::string& path) {
   D_ = std::move(D);
   have_density_ = true;
   have_occ_ = false;
-  restarted_ = true;
+  restarted_ = h.scf_converged != 0;  // converged density: converge the bands thoroughly in the first step
   mixer_.reset();
+
+  // wavefunctions, if stored and compatible (otherwise atomic-orbital start vectors are used)
+  int has_wfc = 0, nk = 0, nb = 0;
+  if (std::fread(&has_wfc, sizeof has_wfc, 1, fc.f) != 1 || !has_wfc) return true;
+  if (std::fread(&nk, sizeof nk, 1, fc.f) != 1 || std::fread(&nb, sizeof nb, 1, fc.f) != 1) return true;
+  if (nk != static_cast<int>(basis_.size()) || nb != nbands_) return true;
+  std::vector<CMatrix> psi(psi_.size());
+  std::vector<std::vector<double>> eig(psi_.size(), std::vector<double>(nbands_));
+  for (int ik = 0; ik < nk; ++ik) {
+    const PWBasis& b = basis_[ik];
+    Vec3 kf;
+    int npw = 0;
+    if (std::fread(kf.data(), sizeof(double), 3, fc.f) != 3 || std::fread(&npw, sizeof npw, 1, fc.f) != 1 || npw <= 0) return true;
+    for (int d = 0; d < 3; ++d)
+      if (std::abs(kf[d] - b.kfrac[d]) > 1e-10) return true;
+    std::vector<int> mill(3 * static_cast<size_t>(npw));
+    if (std::fread(mill.data(), sizeof(int), mill.size(), fc.f) != mill.size()) return true;
+    // position of every stored plane wave in the present basis (-1: not in the basis)
+    std::vector<int> where(fft_c_.size(), -1), map(npw, -1);
+    for (int ig = 0; ig < b.npw; ++ig) where[b.idx[ig]] = ig;
+    for (int ig = 0; ig < npw; ++ig) {
+      const int* m = &mill[3 * static_cast<size_t>(ig)];
+      if (2 * std::abs(m[0]) < fft_c_.n(0) && 2 * std::abs(m[1]) < fft_c_.n(1) && 2 * std::abs(m[2]) < fft_c_.n(2))
+        map[ig] = where[fft_c_.index(m[0], m[1], m[2])];
+    }
+    std::vector<cplx> buf(static_cast<size_t>(npw) * nbands_);
+    for (int s = 0; s < nspin_; ++s) {
+      const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
+      if (std::fread(eig[ks].data(), sizeof(double), nbands_, fc.f) != static_cast<size_t>(nbands_) ||
+          std::fread(buf.data(), sizeof(cplx), buf.size(), fc.f) != buf.size())
+        return true;
+      psi[ks].resize(b.npw, nbands_);
+      for (int n = 0; n < nbands_; ++n)
+        for (int ig = 0; ig < npw; ++ig)
+          if (map[ig] >= 0) psi[ks](map[ig], n) = buf[static_cast<size_t>(n) * npw + ig];
+    }
+  }
+  psi_ = std::move(psi);
+  eig_ = std::move(eig);
+  first_solve_ = false;
+  int has_mixer = 0;
+  double dr2 = 0.0;
+  if (std::fread(&has_mixer, sizeof has_mixer, 1, fc.f) == 1 && has_mixer && std::fread(&dr2, sizeof dr2, 1, fc.f) == 1 &&
+      mixer_.load(fc.f))
+    resume_dr2_ = dr2;
   return true;
 }
 

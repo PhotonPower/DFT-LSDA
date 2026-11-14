@@ -211,6 +211,34 @@ static void test_fft_linalg() {
     err = std::max(err, std::abs(f[i] - (i == fft.index(2, -3, 1) ? cplx(static_cast<double>(f.size())) : cplx(0))));
   check(err < 1e-10, "FFT convention and index mapping", err);
 
+  // pruned transforms agree with the full ones for data supported on a small sphere
+  {
+    FFT3D g(15, 18, 16);
+    const int M = 3;
+    std::vector<int> cols, planes;
+    std::vector<size_t> idx;
+    for (int m1 = -M; m1 <= M; ++m1) {
+      planes.push_back(m1 < 0 ? m1 + 15 : m1);
+      for (int m2 = -M; m2 <= M; ++m2) {
+        if (m1 * m1 + m2 * m2 > M * M) continue;
+        cols.push_back((m1 < 0 ? m1 + 15 : m1) * 18 + (m2 < 0 ? m2 + 18 : m2));
+        for (int m3 = -M; m3 <= M; ++m3)
+          if (m1 * m1 + m2 * m2 + m3 * m3 <= M * M) idx.push_back(g.index(m1, m2, m3));
+      }
+    }
+    CVec a(g.size(), cplx(0.0)), b(g.size(), cplx(0.0));
+    for (size_t i = 0; i < idx.size(); ++i) a[idx[i]] = b[idx[i]] = cplx(std::sin(0.37 * i), std::cos(1.1 * i));
+    g.backward(a.data());
+    g.backward_pruned(b.data(), cols, planes);
+    err = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) err = std::max(err, std::abs(a[i] - b[i]));
+    for (size_t i = 0; i < a.size(); ++i) a[i] = b[i] = a[i] * std::cos(0.01 * i);  // "potential times psi"
+    g.forward(a.data());
+    g.forward_pruned(b.data(), cols, planes);
+    for (size_t i : idx) err = std::max(err, std::abs(a[i] - b[i]));
+    check(err < 1e-10, "pruned FFT equals full FFT on the plane-wave sphere", err);
+  }
+
   // generalized Hermitian eigenproblem
   const int n = 30;
   CMatrix A(n, n), B(n, n);

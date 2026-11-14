@@ -152,6 +152,14 @@ Dichte G-Kugel (`dense_factor`, bei ecut = 25 Ha): Faktor 4 → 16 ändert die E
   kann die Rechnung in die unmagnetische Lösung laufen; für FeAl feinere Gitter und
   `width ≤ 0.005` verwenden und das Moment kontrollieren (`fixed_moment` für Scans).
 
+## 7a. Unterbrechen und Fortsetzen
+
+* Relaxation von verzerrtem, spinpolarisiertem FeAl in drei Zeitscheiben (`max_seconds = 9`) gegen den
+  ununterbrochenen Lauf: Energie 3e-11 Ha, Positionen 7e-7 Abweichung.
+* SCF nach 5 Iterationen abgebrochen und fortgesetzt: gleiche Energie (< 1e-12 Ha), insgesamt 14 statt
+  17 Iterationen (Pulay-Historie und Wellenfunktionen liegen im Checkpoint). Ohne gespeicherte Historie
+  waren es 25.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),
@@ -164,7 +172,20 @@ NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20
 | PPCG + LCAO-Start (Standard) | 65–80 s |
 
 Im PPCG-Lauf entfallen etwa 40 % auf die FFTs und 45 % auf dichte lineare Algebra; bei größeren Zellen
-wächst der Anteil der linearen Algebra (O(N³)).
+wächst der Anteil der linearen Algebra (O(N³)). Diese Zeiten stammen von vor der ausgedünnten FFT.
+
+Ausgedünnte FFT (nur die 1D-Transformationen, die zur G-Kugel beitragen), Einzeltransformation inklusive
+Füllen des Gitters, ein Thread:
+
+| Gitter | volle 3D-FFT | ausgedünnt | Faktor |
+|---|---|---|---|
+| 45³ | 0.75 ms | 0.55 ms | 1.36 |
+| 49³ | 0.99 ms | 0.55 ms | 1.79 |
+| 70³ | 2.98 ms | 1.78 ms | 1.68 |
+| 72³ | 2.86 ms | 1.77 ms | 1.62 |
+
+Im Programm sank die FFT-Zeit pro Hamilton-Anwendung auf der 15-Atom-Zelle von 32 auf 24 ms; der Wert
+ist wegen thermischer Drosselung des Laptops und unterschiedlicher Bandzahlen pro Aufruf nur grob vergleichbar.
 
 ## 9. Noch nicht gerechnet
 

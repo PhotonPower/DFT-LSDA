@@ -25,6 +25,8 @@ struct PWBasis {
   int npw = 0;
   std::vector<size_t> idx;   // position of each plane wave in the coarse FFT box
   std::vector<int> mill;     // integer components of G (3 per plane wave)
+  std::vector<int> columns;  // FFT-box columns (i1 * n2 + i2) and
+  std::vector<int> planes;   // i1 planes that contain plane waves (for the pruned FFT)
   std::vector<double> kin;   // kinetic energy T(|k+G|^2/2); equals |k+G|^2/2 unless the cutoff is smoothed
   std::vector<double> dkin;  // dT/d(|k+G|^2/2)  (1 without smoothing); needed for the stress
   std::vector<double> kg;    // Cartesian k+G (3 per plane wave)

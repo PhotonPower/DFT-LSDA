@@ -138,6 +138,8 @@ Input read_input(const std::string& path) {
   take("eig_tol_factor", [&](const std::string& v) { p.eig_tol_factor = to_double(v, "eig_tol_factor"); });
   take("eig_tol_max", [&](const std::string& v) { p.eig_tol_max = to_double(v, "eig_tol_max"); });
   take("paw_ntheta", [&](const std::string& v) { p.paw_ntheta = static_cast<int>(to_double(v, "paw_ntheta")); });
+  take("max_seconds", [&](const std::string& v) { p.max_seconds = to_double(v, "max_seconds"); });
+  take("checkpoint_wfc", [&](const std::string& v) { p.checkpoint_wfc = to_bool(v, "checkpoint_wfc"); });
   take("seed", [&](const std::string& v) { p.seed = static_cast<unsigned>(to_double(v, "seed")); });
   take("relax_steps", [&](const std::string& v) { inp.relax.max_steps = static_cast<int>(to_double(v, "relax_steps")); });
   take("force_tol", [&](const std::string& v) { inp.relax.force_tol = to_double(v, "force_tol"); });
