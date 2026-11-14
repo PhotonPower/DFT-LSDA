@@ -62,6 +62,9 @@ struct KPoint {
 
 // Monkhorst-Pack grid k = (i + shift)/n reduced with the symmetry operations and time reversal.
 // Operations that do not map the grid onto itself are removed from `ops`.
-std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<SymOp>& ops);
+// If grid_map is given it receives, for every point (i0 * n1 + i1) * n2 + i2 of the full grid, the index of
+// its irreducible k-point.
+std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<SymOp>& ops,
+                                 std::vector<int>* grid_map = nullptr);
 
 }  // namespace lsda

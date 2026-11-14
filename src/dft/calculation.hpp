@@ -27,7 +27,7 @@ struct Params {
   // electrons
   int nspin = 1;
   int nbands = 0;  // 0: automatic
-  std::string smearing = "cold";
+  std::string smearing = "cold";  // fermi | gauss | mp1 | cold | tetrahedron
   double width = 0.005;  // Ha
   std::optional<double> fixed_moment;
   std::string xc;             // pw92 | pbe; empty: taken from the PAW datasets
@@ -149,6 +149,7 @@ class Calculation {
   std::vector<std::vector<RMatrix>> rot_;  // [op][species] rotation of projector indices
   std::vector<KPoint> kpts_;
   std::vector<double> kweight_;
+  TetraGrid tetra_;                       // k-grid connectivity for the tetrahedron method
   FFT3D fft_c_, fft_f_;
   GSphere gs_;
   std::vector<PWBasis> basis_;

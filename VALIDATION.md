@@ -262,6 +262,13 @@ am gemeinsamen k-Punkt (Γ) stimmen die Bandstruktur-Eigenwerte mit den SCF-Eige
 Die Cube-Datei hat die richtige Punktzahl und ein positives, integrierbares Dichtefeld. Für NiAl/FeAl nicht
 gerechnet.
 
+## 7g. Tetraedermethode
+
+* Freie Elektronen auf kubischem Gitter (Unit-Test): Fermi-Energie 3.9 % (8³) bzw. 0.95 % (16³) Abweichung
+  (lineare Interpolation, ∝ h²); Bandenergie mit Blöchl-Korrektur 2.2e-3 bzw. 5.9e-5.
+* fcc-Al (1 Atom, 10 Ha): Tetraeder 6³ mit und ohne Symmetrie −241.9205964884 / −241.9205964897 Ha;
+  Tetraeder 10³: −241.91900, cold 10³: −241.91872, cold 16³: −241.91951 Ha.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

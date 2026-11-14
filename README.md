@@ -13,7 +13,7 @@ B2-Aluminiden NiAl und FeAl, aber allgemein für periodische Kristalle einsetzba
 | Datensätze | PAW-XML (JTH-Tabelle v1.1, LDA-PW und GGA-PBE, skalarrelativistisch; Ni/Fe mit 3s3p-Semicore) in `pseudos/` |
 | Basis | ebene Wellen; grobes FFT-Gitter für Wellenfunktionen, dichte G-Kugel für Dichte, Kompensationsladung, Hartree und XC |
 | Brillouin-Zone | Monkhorst-Pack-Gitter, Reduktion mit der vollen Raumgruppe + Zeitumkehr; Dichte, PAW-Dichtematrizen und Kräfte werden symmetrisiert |
-| Besetzungen | Fermi-Dirac, Gauß, Methfessel-Paxton (1. Ordnung), Marzari-Vanderbilt ("cold"); optional festes Gesamtmoment |
+| Besetzungen | Fermi-Dirac, Gauß, Methfessel-Paxton (1. Ordnung), Marzari-Vanderbilt ("cold"), Tetraedermethode mit Blöchl-Korrektur; optional festes Gesamtmoment |
 | Eigenlöser | PPCG (Projected Preconditioned CG, Vecharynski/Yang/Pask 2015) für H ψ = ε S ψ: bandweise 3×3-Rayleigh-Ritz-Schritte, Cholesky-QR, alle Matrixelemente über PAW-Projektionen ⟨p̃ᵢ\|ψ⟩; alternativ All-Band-LOBPCG. Teter-Payne-Allan-Vorkonditionierung, Toleranz an das Dichteresiduum gekoppelt, LCAO-Startwellenfunktionen |
 | SCF | Pulay/Anderson-Mischung von Dichte, Magnetisierung und PAW-Dichtematrizen, Kerker-Vorkonditionierung, Hartree-Metrik |
 | Kräfte / Relaxation | analytische Hellmann-Feynman-Kräfte (inkl. PAW-Terme), BFGS |
@@ -93,7 +93,7 @@ end
 | `xc` | aus den Datensätzen | `pw92` (LSDA) oder `pbe`; ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
 | `nspin` | 1 | 2 = spinpolarisiert |
 | `nbands` | automatisch | Zahl der Bänder |
-| `smearing`, `width` | `cold`, 0.005 Ha | `fermi`, `gauss`, `mp1`, `cold` |
+| `smearing`, `width` | `cold`, 0.005 Ha | `fermi`, `gauss`, `mp1`, `cold`, `tetrahedron` (ohne Breite; Kräfte und Spannungen sind damit nicht exakt konsistent zur Energie – für Relaxationen eine Verschmierung verwenden) |
 | `fixed_moment` | – | festes Gesamtmoment (µB) |
 | `max_scf`, `scf_tol` | 100, 1e-9 | SCF-Schritte, Schwelle für das quadrierte Dichteresiduum |
 | `mix_alpha`, `mix_alpha_mag` | 0.3, 0.3 | Mischfaktoren Ladung / Magnetisierung |

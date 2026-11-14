@@ -139,7 +139,7 @@ std::vector<SymOp> find_symmetry(const Crystal& c, bool enabled, double tol) {
   return ops;
 }
 
-std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<SymOp>& ops) {
+std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<SymOp>& ops, std::vector<int>* grid_map) {
   const int ntot = n[0] * n[1] * n[2];
   LSDA_CHECK(ntot > 0, "k-point grid must have positive dimensions");
   auto grid_index = [&](const Vec3& k, int& idx) {  // true if k is a grid point
@@ -203,6 +203,7 @@ std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<
     }
     kpts.push_back({k, static_cast<double>(count) / ntot});
   }
+  if (grid_map) *grid_map = owner;
   return kpts;
 }
 

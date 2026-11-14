@@ -435,6 +435,35 @@ static void test_occupations_mixer() {
   check(std::abs(o.n_spin[0] + o.n_spin[1] - 9.3) < 1e-10, "Fermi level: electron count", std::abs(o.n_spin[0] + o.n_spin[1] - 9.3));
   o = compute_occupations(eig, kw, 2, 9.3, Smearing::FermiDirac, 0.01, 1.7);
   check(std::abs(o.n_spin[0] - o.n_spin[1] - 1.7) < 1e-10, "Fermi level: fixed spin moment", std::abs(o.n_spin[0] - o.n_spin[1] - 1.7));
+  // tetrahedron method for free electrons eps = k^2/2 on a cubic grid: electron number and band energy
+  // inside the Fermi sphere, n = k_F^3/(6 pi^2) Omega_cell and E = (3/5) eps_F n (per spin)
+  for (int ngrid : {8, 16}) {
+    TetraGrid g;
+    const double a = 5.0, kf = 0.9 * pi / a;  // sphere well inside the first Brillouin zone
+    g.n[0] = g.n[1] = g.n[2] = ngrid;
+    g.B = Mat3{{{2 * pi / a, 0, 0}, {0, 2 * pi / a, 0}, {0, 0, 2 * pi / a}}};
+    const int nt = ngrid * ngrid * ngrid;
+    g.map.resize(nt);
+    std::vector<std::vector<double>> e(nt, std::vector<double>(1));
+    for (int i = 0; i < nt; ++i) {
+      g.map[i] = i;
+      const int m[3] = {i / (ngrid * ngrid), (i / ngrid) % ngrid, i % ngrid};
+      double k2 = 0.0;
+      for (int d = 0; d < 3; ++d) {
+        double x = static_cast<double>(m[d]) / ngrid;
+        if (x > 0.5) x -= 1.0;
+        k2 += std::pow(2 * pi / a * x, 2);
+      }
+      e[i][0] = 0.5 * k2;
+    }
+    const double nexact = 2.0 * kf * kf * kf / (6 * pi * pi) * a * a * a;  // both spins
+    const Occupations ot = compute_occupations(e, std::vector<double>(nt, 1.0 / nt), 1, nexact, Smearing::Tetrahedron, 0.0, std::nullopt, &g);
+    const double eband = 0.6 * (0.5 * kf * kf) * nexact;
+    check(std::abs(ot.efermi[0] - 0.5 * kf * kf) < (ngrid == 8 ? 5e-2 : 1.2e-2) * 0.5 * kf * kf, strf("tetrahedron: Fermi level of free electrons, %d^3 grid (relative)", ngrid),
+          std::abs(ot.efermi[0] / (0.5 * kf * kf) - 1.0));
+    check(std::abs(ot.band_energy - eband) < (ngrid == 8 ? 3e-3 : 1e-4) * eband, strf("tetrahedron: band energy with Bloechl correction, %d^3 grid (relative)", ngrid),
+          std::abs(ot.band_energy / eband - 1.0));
+  }
   // Pulay mixing solves a linear fixed-point problem x = A x + b in (dimension + 1) steps
   const int n = 6;
   std::vector<double> A(n * n), b(n), x(n, 0.0);

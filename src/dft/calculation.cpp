@@ -54,7 +54,9 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
 
   // ---- symmetry and k-points ----------------------------------------------------------
   ops_ = find_symmetry(c_, p_.symmetry);
-  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_);
+  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_, &tetra_.map);
+  for (int d = 0; d < 3; ++d) tetra_.n[d] = p_.kgrid[d];
+  tetra_.B = c_.B;
   for (const KPoint& k : kpts_) kweight_.push_back(k.weight);
   rot_.resize(ops_.size());
   for (size_t io = 0; io < ops_.size(); ++io)
@@ -147,7 +149,11 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
     logf("  Symmetry operations    : %zu\n", ops_.size());
     logf("  k-points               : %d x %d x %d grid -> %zu irreducible\n", p_.kgrid[0], p_.kgrid[1], p_.kgrid[2],
          kpts_.size());
-    logf("  Smearing               : %s, width %.5f Ha\n", p_.smearing.c_str(), p_.width);
+    if (smearing_ == Smearing::Tetrahedron)
+      logf("  Brillouin-zone integral: tetrahedron method with Bloechl correction (forces and stresses are not\n"
+           "                           exactly consistent with this energy; use a smearing method for relaxations)\n");
+    else
+      logf("  Smearing               : %s, width %.5f Ha\n", p_.smearing.c_str(), p_.width);
     logf("  Threads                : %d\n", num_threads());
     const double mem = 16.0 * npw_max * nbands_ * kpts_.size() * nspin_ / 1048576.0;
     logf("  Wavefunction storage   : %.1f MB\n", mem);
@@ -986,7 +992,7 @@ bool Calculation::scf() {
     first_solve_ = false;
     restarted_ = false;
 
-    occ_ = compute_occupations(eig_, kweight_, nspin_, nelec_, smearing_, p_.width, p_.fixed_moment);
+    occ_ = compute_occupations(eig_, kweight_, nspin_, nelec_, smearing_, p_.width, p_.fixed_moment, &tetra_);
     have_occ_ = true;
 
     RhoG rho_out;
@@ -1009,7 +1015,8 @@ bool Calculation::scf() {
       case Smearing::FermiDirac:
       case Smearing::Gaussian: en_.sigma0 = e_ks + 0.5 * occ_.entropy_term; break;
       case Smearing::MethfesselPaxton1: en_.sigma0 = e_ks + (2.0 / 3.0) * occ_.entropy_term; break;
-      case Smearing::Cold: en_.sigma0 = en_.free; break;
+      case Smearing::Cold:
+      case Smearing::Tetrahedron: en_.sigma0 = en_.free; break;
     }
 
     const std::vector<double> x_in = pack(rho_, D_), x_out = pack(rho_out, D_out);
