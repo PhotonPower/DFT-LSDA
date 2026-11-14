@@ -51,6 +51,35 @@ static int run(int argc, char** argv) {
         if (inp.task == "cellrelax" || inp.task == "phonons") inp.crystal.set_lattice(lattice);
       }
     }
+    if (inp.task == "elastic") {
+      const ElasticResult r = run_elastic(inp.crystal, inp.params, inp.relax, inp.strain);
+      if (r.stopped) {
+        logf("\n  Stopped by the wall-time limit (elastic constants cannot be restarted; increase max_seconds).\n");
+        return 4;
+      }
+      const double gpa = 29421.02648438959;
+      logf("\n  Elastic constants C_ij (GPa), Voigt order xx yy zz yz xz xy; %d strained cells, asymmetry %.3f GPa\n", r.n_strained,
+           r.asymmetry * gpa);
+      for (int i = 0; i < 6; ++i) {
+        std::string line;
+        for (int j = 0; j < 6; ++j) line += strf(" %10.3f", r.C(i, j) * gpa);
+        logf("   %s\n", line.c_str());
+      }
+      const RMatrix& C = r.C;
+      logf("  Bulk modulus (Voigt average): %.3f GPa\n", (C(0, 0) + C(1, 1) + C(2, 2) + 2.0 * (C(0, 1) + C(0, 2) + C(1, 2))) / 9.0 * gpa);
+      logf("  C11 = %.3f, C12 = %.3f, C44 = %.3f GPa;  C' = (C11 - C12)/2 = %.3f GPa\n", C(0, 0) * gpa, C(0, 1) * gpa, C(3, 3) * gpa,
+           0.5 * (C(0, 0) - C(0, 1)) * gpa);
+      RMatrix ev = C;
+      std::vector<double> lam;
+      eigh_real(ev, lam);
+      logf(lam[0] > 0.0 ? "  Mechanically stable (all eigenvalues of C positive, smallest %.3f GPa)\n"
+                        : "  WARNING: mechanically unstable (smallest eigenvalue of C: %.3f GPa)\n", lam[0] * gpa);
+      write_elastic_results(inp.prefix + ".elastic.json", inp.crystal, r);
+      logf("\n  Elastic constants written to %s.elastic.json\n", inp.prefix.c_str());
+      print_timings();
+      logf("\n  Total wall time: %.1f s\n", wall_time());
+      return 0;
+    }
     if (inp.task == "phonons") {
       std::vector<double> masses;
       for (const Atom& a : inp.crystal.atoms) {

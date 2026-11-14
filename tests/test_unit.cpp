@@ -366,7 +366,11 @@ static void test_paw(const std::string& dir, bool gga) {
   const std::unique_ptr<XCFunctional> xcp = make_xc(gga ? "pbe" : "pw92");
   const XCFunctional& xc = *xcp;
   for (const char* el : {"Al", "Fe", "Ni"}) {
-    const PawSetup s = PawSetup::load(dir + "/" + el + (gga ? ".GGA_PBE-JTH.xml" : ".LDA_PW-JTH.xml"));
+    PawSetup s = PawSetup::load(dir + "/" + el + (gga ? ".GGA_PBE-JTH.xml" : ".LDA_PW-JTH.xml"));
+    if (!gga && std::string(el) != "Al") {  // the LDA runs of Fe and Ni also cover the Hubbard term (d shell)
+      s.hubbard_l = 2;
+      s.hubbard_u = 0.15;
+    }
     check(std::abs(s.check_core_charge - s.n_core) < 1e-6, std::string(el) + ": core charge", std::abs(s.check_core_charge - s.n_core));
     check(s.check_duality < 5e-5, std::string(el) + ": <p_i|phi~_j> = delta_ij", s.check_duality);
     // neutrality of the reference atom: sqrt(4 pi) Q_00 + pseudo valence + pseudo core charge = 0

@@ -34,6 +34,16 @@ V_eff = -kT d ln c_d / dp.  The volumes are taken from
     v_d = V (p_d - p_0)/B from the residual pressure, and the energies are corrected to zero pressure by
     the elastic relaxation energy -V (p_d - p_0)^2 / (2 B)   (first-order elastic estimate).
 
+Defect complexes (--complex NAME FILE MULTIPLICITY [PARTS]).  A bound complex (e.g. a nearest-neighbour
+vacancy-antisite pair or the bound triple defect) is treated as an additional dilute defect species with
+its own supercell: eps_k = E(complex cell) - E(perfect cell), the changes dA, dB of the atom numbers are
+read from the files, and
+    c_k = g_k exp[-(eps_k - dA mu_A - dB mu_B)/kT]
+with the number g_k of distinct orientations per unit cell (MULTIPLICITY).  Complexes enter the particle
+balance and the lattice equation (- kT sum_k c_k).  PARTS (optional, e.g. V_a,V_a,A_b) names the single
+defects the complex consists of; the binding energy eps_k - sum eps_parts is then printed (negative =
+bound).  Keys of the single defects: V_a, B_a, V_b, A_b.
+
 Vibrations (--vibrations).  If every supercell has Gamma-point phonon frequencies (task = phonons, file
 <prefix>.phonons.json next to <prefix>.json), the harmonic vibrational free energy
     F_vib(T) = sum_modes [ h nu / 2 + kT ln(1 - exp(-h nu / kT)) ]        (three acoustic modes omitted)
@@ -70,13 +80,18 @@ def vibrational_free_energy(freqs_thz, T):
 
 
 class B2Model:
-    def __init__(self, eps0, e_va, e_ba, e_vb, e_ab):
+    def __init__(self, eps0, e_va, e_ba, e_vb, e_ab, complexes=()):
         self.eps0, self.e = eps0, {"V_a": e_va, "B_a": e_ba, "V_b": e_vb, "A_b": e_ab}
+        self.complexes = list(complexes)  # dicts with name, eps, dA, dB, g, vol
 
     def at_pressure(self, p_gpa, omega0, vol):
         """Model with enthalpies at pressure p (GPa); omega0 and vol[d] in A^3."""
         f = p_gpa * GPA_A3_EV
-        return B2Model(self.eps0 + f * omega0, *(self.e[d] + f * vol[d] for d in ("V_a", "B_a", "V_b", "A_b")))
+        cx = [dict(c, eps=c["eps"] + f * c.get("vol", 0.0)) for c in self.complexes]
+        return B2Model(self.eps0 + f * omega0, *(self.e[d] + f * vol[d] for d in ("V_a", "B_a", "V_b", "A_b")), complexes=cx)
+
+    def complex_concentrations(self, mu_a, mu_b, kt):
+        return {c["name"]: c["g"] * expc(-(c["eps"] - c["dA"] * mu_a - c["dB"] * mu_b) / kt) for c in self.complexes}
 
     def concentrations(self, mu_a, mu_b, kt):
         e = self.e
@@ -86,19 +101,32 @@ class B2Model:
         r_ab = expc(-(e["A_b"] - mu_a + mu_b) / kt)
         xa = 1.0 / (1.0 + r_va + r_ba)
         xb = 1.0 / (1.0 + r_vb + r_ab)
-        return {"V_a": xa * r_va, "B_a": xa * r_ba, "V_b": xb * r_vb, "A_b": xb * r_ab, "x_a": xa, "x_b": xb}
+        out = {"V_a": xa * r_va, "B_a": xa * r_ba, "V_b": xb * r_vb, "A_b": xb * r_ab, "x_a": xa, "x_b": xb,
+               "ln_x": -math.log1p(r_va + r_ba) - math.log1p(r_vb + r_ab)}  # ln(x_a x_b) without underflow
+        out["complex"] = self.complex_concentrations(mu_a, mu_b, kt)
+        return out
 
     def solve(self, x_a, T):
         """Chemical potentials and defect concentrations (per unit cell) at atomic fraction x_a and temperature T."""
         kt = KB_EV * T
 
+        def lattice(s, d):
+            c = self.concentrations(0.5 * (s + d), 0.5 * (s - d), kt)
+            return self.eps0 - s + kt * c["ln_x"] - kt * sum(c["complex"].values())
+
         def mus(d):  # for given mu_A - mu_B = d solve the lattice equation for s = mu_A + mu_B
-            lo, hi = self.eps0 - 20.0, self.eps0 + 20.0
-            for _ in range(200):
+            # The physical (dilute) solution is the first root below eps0. Without complexes the left-hand
+            # side is monotonic in s; complexes that remove formula units grow like exp(-s/kT). The root is
+            # therefore bracketed by stepping down from eps0 with growing steps (fine near eps0).
+            hi = self.eps0 if lattice(self.eps0, d) <= 0 else self.eps0 + 50.0
+            lo, step = hi, 0.05 * kt
+            while lattice(lo, d) <= 0 and lo > self.eps0 - 500.0:
+                hi = lo
+                lo -= step
+                step *= 1.5
+            for _ in range(100):
                 s = 0.5 * (lo + hi)
-                c = self.concentrations(0.5 * (s + d), 0.5 * (s - d), kt)
-                g = self.eps0 - s + kt * math.log(c["x_a"] * c["x_b"])
-                if g > 0:
+                if lattice(s, d) > 0:
                     lo = s
                 else:
                     hi = s
@@ -109,6 +137,9 @@ class B2Model:
             ma, mb = mus(d)
             c = self.concentrations(ma, mb, kt)
             na, nb = c["x_a"] + c["A_b"], c["x_b"] + c["B_a"]
+            for cx in self.complexes:  # atoms added or removed by the complexes
+                na += c["complex"][cx["name"]] * cx["dA"]
+                nb += c["complex"][cx["name"]] * cx["dB"]
             return na / (na + nb)
 
         # mu_A - mu_B is of the order of the antisite energies (absolute total energies are large numbers)
@@ -121,6 +152,9 @@ class B2Model:
             else:
                 hi = d
         ma, mb = mus(0.5 * (lo + hi))
+        if abs(lattice(ma + mb, ma - mb)) > 1e-6:
+            raise SystemExit("no dilute solution of the lattice equation: a defect or complex has a "
+                             "negative formation energy at these conditions")
         return ma, mb, self.concentrations(ma, mb, kt)
 
     def effective_energies(self, x_a, T, dT=2.0):
@@ -145,6 +179,8 @@ def main():
                     help="atomic fraction of the transition metal")
     ap.add_argument("--names", nargs=2, default=["TM", "Al"])
     ap.add_argument("--p", type=float, nargs="+", default=[0.0], help="pressures in GPa")
+    ap.add_argument("--complex", nargs="+", action="append", default=[], metavar="ARG",
+                    help="NAME FILE MULTIPLICITY [PARTS]: bound defect complex with its own supercell (see above)")
     ap.add_argument("--vibrations", action="store_true",
                     help="add harmonic vibrational free energies from <prefix>.phonons.json of every supercell")
     ap.add_argument("--bulk-modulus", type=float, default=None,
@@ -190,6 +226,21 @@ def main():
     A, B = args.names
     label = {"V_a": f"V_{A}", "B_a": f"{B}_{A}", "V_b": f"V_{B}", "A_b": f"{A}_{B}"}
 
+    def count(r, name):
+        return sum(1 for a in r.get("atoms", []) if a["species"].rstrip("*") == name)
+
+    complexes = []
+    for spec in args.complex:
+        if len(spec) not in (3, 4):
+            raise SystemExit("--complex needs NAME FILE MULTIPLICITY [PARTS]")
+        r = load(spec[1])
+        if "atoms" not in perfect or "atoms" not in r:
+            raise SystemExit("--complex: the result files must contain the atom lists")
+        cx = {"name": spec[0], "file": spec[1], "g": float(spec[2]), "eps": energy(r) - e_perf,
+              "dA": count(r, A) - count(perfect, A), "dB": count(r, B) - count(perfect, B),
+              "vol": r["volume"] * BOHR3_A3 - v_perf, "parts": spec[3].split(",") if len(spec) == 4 else None}
+        complexes.append(cx)
+
     print(f"Supercell: {n_cells} unit cells, eps0 = {eps0:.6f} eV per formula unit")
     print("\nRaw defect energies eps_d = E(defect cell) - E(perfect cell)  [eV]")
     for d in eps:
@@ -204,6 +255,20 @@ def main():
     ]
     for name, e in reactions:
         print(f"  {name:42s} {e:10.4f}")
+    if complexes:
+        print("\nDefect complexes (raw energy eps_k [eV], change of atom numbers, orientations per cell)")
+        for cx in complexes:
+            line = f"  {cx['name']:12s} {cx['eps']:14.6f}   d{A} = {cx['dA']:+d}, d{B} = {cx['dB']:+d}, g = {cx['g']:g}"
+            if cx["parts"]:
+                for part in cx["parts"]:
+                    if part not in eps:
+                        raise SystemExit(f"--complex {cx['name']}: unknown part '{part}' (use V_a, B_a, V_b, A_b)")
+                da = sum({"V_a": -1, "B_a": -1, "V_b": 0, "A_b": 1}[q] for q in cx["parts"])
+                db = sum({"V_a": 0, "B_a": 1, "V_b": -1, "A_b": -1}[q] for q in cx["parts"])
+                if (da, db) != (cx["dA"], cx["dB"]):
+                    raise SystemExit(f"--complex {cx['name']}: the parts do not match the atom numbers of {cx['file']}")
+                line += f"   binding energy {cx['eps'] - sum(eps[q] for q in cx['parts']):+.4f} eV"
+            print(line)
     print(f"\nConstitutional defects at T -> 0 (energy per excess atom, relative) [eV]")
     # A-rich: one excess A atom either as antisite A_b (plus 1/2 formula unit removed) or as two V_b... compare per excess atom
     #   antisite:   A_b   changes (N_A, N_B) by (+1, -1)  -> +2 A excess per defect at fixed N: cost eps_Ab / 2 per unit deviation
@@ -221,7 +286,7 @@ def main():
     freqs = None
     if args.vibrations:
         freqs = {}
-        for key, path in dict(files, perfect=args.perfect).items():
+        for key, path in dict(files, perfect=args.perfect, **{c["name"]: c["file"] for c in complexes}).items():
             ph = path[:-5] + ".phonons.json" if path.endswith(".json") else path + ".phonons.json"
             try:
                 freqs[key] = json.load(open(ph))["frequencies_THz"]
@@ -234,10 +299,11 @@ def main():
     def model_at(T):
         """Model with the supercell free energies at temperature T (static energies without --vibrations)."""
         if freqs is None:
-            return B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"])
+            return B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"], complexes=complexes)
         fp = vibrational_free_energy(freqs["perfect"], T)
         shift = {d: vibrational_free_energy(freqs[d], T) - fp for d in order}
-        return B2Model(eps0 + fp / n_cells, *(eps[d] + shift[d] for d in order))
+        cx = [dict(c, eps=c["eps"] + vibrational_free_energy(freqs[c["name"]], T) - fp) if c["name"] in freqs else c for c in complexes]
+        return B2Model(eps0 + fp / n_cells, *(eps[d] + shift[d] for d in order), complexes=cx)
 
     if freqs is not None:
         print("\nVibrational contributions to the composition-conserving reactions")
@@ -292,6 +358,8 @@ def main():
                     veff = {d: -kt * (math.log(cp[d]) - math.log(cm[d])) / (2 * dp * GPA_A3_EV) / (omega0 / 2.0) for d in order}
                     line += "  " + " ".join(f"{veff[d]:8.3f}" for d in order)
                 print(line + f"   {ma - mb:9.4f}")
+                if complexes:
+                    print("            complexes per unit cell: " + ", ".join(f"c({k}) = {v:.4e}" for k, v in c["complex"].items()))
 
 
 if __name__ == "__main__":

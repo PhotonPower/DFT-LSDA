@@ -291,6 +291,8 @@ void PawSetup::compute_onsite_tensors() {
     sq[q] = dl[0][q];
   }
 
+  ae_norm_q_ = nrm;
+
   // ---- expand to the (i,j) representation ---------------------------------------
   dS.resize(ni, ni);
   dN.resize(ni, ni);
@@ -336,6 +338,18 @@ void PawSetup::multipoles(const RMatrix& Dtot, double* Q) const {
   }
 }
 
+RMatrix PawSetup::occupation_matrix(const RMatrix& D) const {
+  LSDA_CHECK(hubbard_l >= 0, "occupation_matrix: no Hubbard shell defined");
+  const int nm = 2 * hubbard_l + 1, l2 = hubbard_l * hubbard_l;
+  RMatrix n(nm, nm);
+  for (int i = 0; i < ni; ++i) {
+    if (l_i[i] != hubbard_l) continue;
+    for (int j = 0; j < ni; ++j)
+      if (l_i[j] == hubbard_l) n(L_i[i] - l2, L_i[j] - l2) += D(i, j) * ae_norm_q_[pair(j_i[i], j_i[j])];
+  }
+  return n;
+}
+
 RMatrix PawSetup::atomic_density_matrix() const {
   RMatrix D(ni, ni);
   for (int i = 0; i < ni; ++i) D(i, i) = f_j[j_i[i]] / (2 * l_i[i] + 1);
@@ -360,6 +374,31 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
       dH[s].resize(ni, ni);
       for (int ij = 0; ij < n2; ++ij) dH[s].data()[ij] = B.data()[ij] + 2.0 * cd[ij];
     }
+
+  // ---- Hubbard correction ------------------------------------------------------------
+  if (hubbard_l >= 0 && hubbard_u != 0.0) {
+    const int nm = 2 * hubbard_l + 1, l2 = hubbard_l * hubbard_l;
+    // occupations per spin channel: for nspin = 1 both channels hold half of the total
+    const double per_spin = nspin == 2 ? 1.0 : 0.5, channels = nspin == 2 ? 1.0 : 2.0;
+    for (int s = 0; s < nspin; ++s) {
+      RMatrix n = occupation_matrix(D[s]);
+      double tr = 0.0, tr2 = 0.0;
+      for (int a = 0; a < nm; ++a) {
+        tr += per_spin * n(a, a);
+        for (int b = 0; b < nm; ++b) tr2 += per_spin * per_spin * n(a, b) * n(b, a);
+      }
+      energy += channels * 0.5 * hubbard_u * (tr - tr2);
+      if (dH)  // dE/dD_ij = U (1/2 delta_mm' - n^s_mm') <phi_i|phi_j>
+        for (int i = 0; i < ni; ++i) {
+          if (l_i[i] != hubbard_l) continue;
+          for (int j = 0; j < ni; ++j) {
+            if (l_i[j] != hubbard_l) continue;
+            const int a = L_i[i] - l2, b = L_i[j] - l2;
+            dH[s](i, j) += hubbard_u * ((a == b ? 0.5 : 0.0) - per_spin * n(a, b)) * ae_norm_q_[pair(j_i[i], j_i[j])];
+          }
+        }
+    }
+  }
 
   // ---- exchange-correlation correction: angular quadrature x radial integration ---
   const int npts = static_cast<int>(quad_.points.size());

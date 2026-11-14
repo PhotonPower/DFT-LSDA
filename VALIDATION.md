@@ -231,6 +231,30 @@ N Prozesse per `fork` und Sockets emuliert (Reduktionen, Broadcast, Senden an Pr
 Nicht geprüft: Lauf mit einer echten MPI-Bibliothek, Skalierung, die komplette Suite mit 3 Prozessen
 (auf dem Laptop zu langsam; nur die oben genannten Einzelfälle).
 
+## 7e. Elastische Konstanten, DFT+U, Defektkomplexe, Größen-Extrapolation
+
+* **Elastische Konstanten**, fcc-Al (1 Atom, 10 Ha, `ecut_smooth` 0.5, Verschmierung 0.02 Ha):
+
+  | k-Gitter | C₁₁ | C₁₂ | C₄₄ | B (GPa) |
+  |---|---|---|---|---|
+  | 6×6×6 | 245.0 | 7.4 | 124.5 | 86.6 |
+  | 12×12×12 | 119.1 | 67.1 | 43.7 | 84.5 |
+
+  Der Kompressionsmodul ist in beiden Fällen plausibel (E(V)-Fit: 82.5 GPa), die Scherkonstanten sind bei 6³
+  völlig unterkonvergiert – eine bekannte Eigenheit von Al, kein Programmfehler. Die Symmetriereduktion
+  (4 statt 12 gedehnte Zellen) liefert die kubische Struktur der Matrix; Asymmetrie 0.004 GPa.
+  Für NiAl/FeAl wurden **keine** elastischen Konstanten gerechnet.
+* **DFT+U**: On-site-Hamiltonoperator = Ableitung der Energie mit U auf der d-Schale (Fe, Ni; Unit-Test);
+  Kräfte gegen finite Differenzen, FeAl unmagnetisch, U = 2 eV: −0.02309572 gegen −0.02309564 Ha/Bohr.
+  Spinpolarisiert mit U = 3 eV stellt sich M = 2.25 µB ein (U = 0: kleineres Moment); dort konvergierte das
+  SCF in 100 Schritten nur bis zu einem Residuum von 6e-11 (Energie auf 1e-10 Ha stabil) – zäher Schwanz.
+  Spannungen mit U sind nicht separat gegen finite Differenzen geprüft (der Term geht nur über die
+  Dichtematrizen ein, wie bei den Kräften).
+* **Defektkomplexe** (synthetische Daten): Konzentration eines gebundenen Tripeldefekts 3.3103e-07 gegen
+  die verdünnte Abschätzung g·exp(−E/kT) = 3.3076e-07; ohne Komplex bleiben alle bisherigen Ergebnisse
+  unverändert.
+* **Größen-Extrapolation** (synthetische Daten mit exaktem 1/V-Verhalten): E_∞ wird exakt wiedergefunden.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

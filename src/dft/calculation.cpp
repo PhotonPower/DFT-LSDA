@@ -1072,6 +1072,19 @@ bool Calculation::scf() {
       logf("  Fermi levels             %12.6f / %12.6f Ha\n", occ_.efermi[0], occ_.efermi[1]);
     else
       logf("  Fermi level              %12.6f Ha  (%.4f eV)\n", occ_.efermi[0], occ_.efermi[0] * hartree_in_ev);
+    for (int a = 0; a < c_.natoms(); ++a) {  // DFT+U: occupations of the Hubbard shells
+      const PawSetup& su = c_.setup(a);
+      if (su.hubbard_l < 0 || su.hubbard_u == 0.0) continue;
+      std::string line = strf("  Hubbard shell atom %d (%s, l = %d, U_eff = %.3f eV): occupation", a + 1,
+                              c_.species[c_.atoms[a].species].name.c_str(), su.hubbard_l, su.hubbard_u * hartree_in_ev);
+      for (int s = 0; s < nspin_; ++s) {
+        const RMatrix n = su.occupation_matrix(D_[a][s]);
+        double tr = 0.0;
+        for (int m = 0; m < n.rows(); ++m) tr += n(m, m);
+        line += strf(nspin_ == 2 ? (s == 0 ? " up %.4f" : ", down %.4f") : " %.4f", tr);
+      }
+      logf("%s\n", line.c_str());
+    }
     if (nspin_ == 2) {
       logf("  Total magnetization      %12.6f mu_B\n", total_magnetization());
       const std::vector<double> m = local_moments();

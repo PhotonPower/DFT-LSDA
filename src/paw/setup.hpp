@@ -56,6 +56,14 @@ class PawSetup {
   // If dH == nullptr only the energy is computed.
   double onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFunctional& xc) const;
 
+  // DFT+U (Dudarev et al., PRB 57, 1505 (1998)): E_U = U_eff/2 sum_s Tr[n^s (1 - n^s)] for one l shell, with
+  // the occupation matrix n^s_mm' = sum_{j1 j2} D^s_(j1 m)(j2 m') <phi_j1|phi_j2>_sphere (all-electron partial
+  // waves inside the augmentation sphere). hubbard_l < 0: no correction.
+  int hubbard_l = -1;
+  double hubbard_u = 0.0;  // U_eff = U - J (Ha)
+  // occupation matrix of the Hubbard shell for one spin density matrix (nspin = 1: both spins together)
+  RMatrix occupation_matrix(const RMatrix& D) const;
+
   // Spin-summed density matrix of the spherical reference atom
   RMatrix atomic_density_matrix() const;
 
@@ -81,6 +89,7 @@ class PawSetup {
   std::vector<double> ylm_grad_quad_;               // tangential gradients of Y_L at the quadrature points (3 nL per point)
   double onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::vector<RMatrix>* vlq, const XCFunctional& xc) const;
   std::vector<double> wr2_;                         // radial weights * r^2
+  std::vector<double> ae_norm_q_;                   // int phi_j1 phi_j2 r^2 dr inside the sphere (equal l)
   std::vector<std::vector<double>> shape_;          // g_l(r), l = 0..2 lmax
   SphereQuadrature quad_;
   RMatrix ylm_quad_;                                // nL x npoints

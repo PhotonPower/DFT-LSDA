@@ -45,7 +45,8 @@ Die Zahl der Threads wird über `OMP_NUM_THREADS` gesteuert.
 
 ### Eingabedatei
 
-`schlüssel = wert`, Kommentare mit `#`, drei Blöcke `begin lattice|species|atoms … end`
+`schlüssel = wert`, Kommentare mit `#`, drei Blöcke `begin lattice|species|atoms … end`,
+optional `begin hubbard … end` (DFT+U, Zeilen `<Spezies> <Schale s|p|d|f> <U_eff in eV>`)
 (optional `begin basis_lattice … end`: Referenzgitter, das die Ebene-Wellen-Basis festlegt – für
 Rechnungen bei fester Basis, z. B. Dehnungstests).
 
@@ -73,7 +74,7 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle), `elastic` (elastische Konstanten) |
 | `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
 | `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
@@ -105,6 +106,7 @@ end
 | `relax_steps`, `force_tol`, `max_step` | 50, 5e-4 Ha/bohr, 0.3 bohr | Relaxation (`force_tol`, `max_step` gelten auch für NEB) |
 | `dos`, `dos_width`, `dos_points` | `false`, Verschmierungsbreite, 2001 | Zustandsdichte nach dem letzten SCF in `<prefix>.dos`: gesamt und projiziert auf die PAW-Kugeln (Atom, l, Spin); Gauß-Breite in Ha |
 | `displacement` | 0.02 bohr | Auslenkung für `task = phonons` (zentrale Differenzen) |
+| `strain` | 0.005 | Dehnungsamplitude für `task = elastic` |
 | `neb_images`, `neb_spring`, `neb_climb`, `neb_steps` | 5, 0.1 Ha/bohr², `true`, 200 | NEB: Zwischenbilder, Federkonstante, Climbing Image, maximale Schritte |
 
 ## Defektbildungsenergien in B2-Verbindungen
@@ -125,6 +127,11 @@ daher nur zusammen mit den chemischen Potentialen definiert. Der Workflow:
    Antistrukturpaar) und die konstitutionellen Defekte. Mit Volumeninformation – auf Druck null
    relaxierte Zellen (`DEFECT_TASK=cellrelax`) oder Zellen festen Volumens mit Spannung (`stress = true`)
    plus `--bulk-modulus` – außerdem Bildungsvolumina und Konzentrationen bei endlichem Druck.
+
+Weitere Optionen von `defect_thermo.py`: `--complex NAME DATEI MULTIPLIZITÄT [TEILE]` nimmt gebundene
+Defektkomplexe (z. B. den gebundenen Tripeldefekt) mit eigener Superzelle als zusätzliche verdünnte
+Defektart auf und gibt ihre Bindungsenergie aus. `tools/size_extrapolation.py VERZ1 VERZ2 …` extrapoliert
+die Reaktionsenergien mehrerer Superzellengrößen mit E(V) = E_∞ + a/V.
 
 `examples/defects/run_defects.sh` führt die Schritte 2–3 automatisch aus (Standard: Defektzellen bei
 festem Volumen; `DEFECT_TASK=cellrelax` relaxiert zusätzlich die Zelle auf Druck null):
@@ -158,6 +165,29 @@ Es werden nur Symmetrieoperationen benutzt, die beide Endzustände gemeinsam hab
 und `max_seconds` lässt sich auch ein NEB-Lauf in Zeitscheiben rechnen. Sitzt ein Bild per Symmetrie
 auf einem Energiemaximum (z. B. das mittlere Bild eines symmetrischen, geraden Pfads), eine gerade Zahl
 von Bildern wählen.
+
+## Elastische Konstanten
+
+`task = elastic` bestimmt C_ij (Voigt-Notation) aus der Spannungsantwort auf kleine Dehnungen ±`strain`,
+mit Relaxation der Atompositionen in jeder gedehnten Zelle. Dehnungsmuster, die durch eine
+Symmetrieoperation auseinander hervorgehen, werden nur einmal gerechnet (kubisch: 4 statt 12 Zellen).
+Ausgabe: volle 6×6-Matrix, Kompressionsmodul, C₁₁/C₁₂/C₄₄, C′, Stabilitätsprüfung und
+`<prefix>.elastic.json`. Wie bei `cellrelax` wird `ecut_smooth = 0.5` gesetzt. Scherkonstanten von
+Metallen brauchen sehr dichte k-Gitter (Al: 6³ liefert Unsinn, 12³ ist brauchbar). Der Kompressionsmodul
+ist der Wert für `defect_thermo.py --bulk-modulus`.
+
+## DFT+U
+
+```
+begin hubbard
+  Fe d 2.0        # Spezies, Schale, U_eff = U - J in eV
+end
+```
+
+Vereinfachte rotationsinvariante Form (Dudarev): E_U = U_eff/2 Σ_σ Sp[n^σ(1 − n^σ)] mit der
+Besetzungsmatrix der Schale aus den PAW-Dichtematrizen (All-Elektronen-Partialwellen in der Kugel).
+Energie, Hamiltonoperator, Kräfte und Spannungen enthalten den Term konsistent; die Besetzung der Schale
+wird am Ende des SCF ausgegeben. Die SCF-Konvergenz kann mit U im magnetischen Fall deutlich zäher sein.
 
 ## Phononen und Schwingungsentropie
 
@@ -262,9 +292,9 @@ src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
-              Relaxation, NEB, Phononen
+              Relaxation, NEB, Phononen, elastische Konstanten
 src/io        Eingabe, JSON-Ausgabe
-tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik
+tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik, Größen-Extrapolation
 tests         Unit- und Regressionstests
 ```
 

@@ -160,12 +160,13 @@ Input read_input(const std::string& path) {
   take("neb_climb", [&](const std::string& v) { inp.neb.climb = to_bool(v, "neb_climb"); });
   take("neb_steps", [&](const std::string& v) { inp.neb.max_steps = static_cast<int>(to_double(v, "neb_steps")); });
   take("displacement", [&](const std::string& v) { inp.phonons.displacement = to_double(v, "displacement"); });
+  take("strain", [&](const std::string& v) { inp.strain = to_double(v, "strain"); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||
-                 inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons",
-             "input: task must be scf, forces, stress, relax, cellrelax, neb or phonons");
+                 inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons" || inp.task == "elastic",
+             "input: task must be scf, forces, stress, relax, cellrelax, neb, phonons or elastic");
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff
-  if (inp.task == "cellrelax" && !smooth_given) p.ecut_smooth = 0.5;
+  if ((inp.task == "cellrelax" || inp.task == "elastic") && !smooth_given) p.ecut_smooth = 0.5;
   if (!kv.empty()) fail("input: unknown keyword '" + kv.begin()->first + "'");
   LSDA_CHECK(units == "bohr" || units == "angstrom", "input: units must be bohr or angstrom");
   LSDA_CHECK(coordinates == "fractional" || coordinates == "cartesian", "input: coordinates must be fractional or cartesian");
@@ -204,6 +205,25 @@ Input read_input(const std::string& path) {
     sp.setup = PawSetup::load(sp.file, p.paw_ntheta);
     inp.crystal.species.push_back(std::move(sp));
   }
+
+  // hubbard:  <species label> <shell: s|p|d|f> <U_eff in eV>
+  if (blocks.count("hubbard"))
+    for (const std::string& l : blocks["hubbard"]) {
+      const auto t = split(l);
+      LSDA_CHECK(t.size() == 3, "input: hubbard line must be '<species> <shell s|p|d|f> <U_eff in eV>'");
+      const std::string shells = "spdf";
+      const size_t lq = shells.find(lower(t[1]));
+      LSDA_CHECK(t[1].size() == 1 && lq != std::string::npos, "input: unknown shell '" + t[1] + "' in block hubbard");
+      bool found = false;
+      for (Species& sp : inp.crystal.species) {
+        if (sp.name != t[0]) continue;
+        found = true;
+        LSDA_CHECK(static_cast<int>(lq) <= sp.setup.lmax, "input: species " + t[0] + " has no " + t[1] + " projectors");
+        sp.setup.hubbard_l = static_cast<int>(lq);
+        sp.setup.hubbard_u = to_double(t[2], "hubbard") / hartree_in_ev;
+      }
+      LSDA_CHECK(found, "input: hubbard block refers to unknown species '" + t[0] + "'");
+    }
 
   // atoms:  <label> x y z [magnetic moment]
   LSDA_CHECK(blocks.count("atoms") && !blocks["atoms"].empty(), "input: block 'atoms' is missing");
@@ -249,7 +269,7 @@ Input read_input(const std::string& path) {
   inp.neb.prefix = inp.prefix;
   inp.neb.restart = inp.restart;
   for (const auto& [name, lines] : blocks)
-    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms" || name == "atoms_final",
+    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms" || name == "atoms_final" || name == "hubbard",
                "input: unknown block '" + name + "'");
   return inp;
 }

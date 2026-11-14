@@ -4,6 +4,7 @@
 #pragma once
 #include "crystal/crystal.hpp"
 #include "dft/calculation.hpp"
+#include "dft/elastic.hpp"
 #include "dft/neb.hpp"
 #include "dft/phonons.hpp"
 #include "dft/relax.hpp"
@@ -11,7 +12,7 @@
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons | elastic
   bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
   bool dos = false;          // write <prefix>.dos after the final SCF
@@ -24,6 +25,7 @@ struct Input {
   CellRelaxParams cell;
   NebParams neb;
   PhononParams phonons;
+  double strain = 0.005;     // strain amplitude for task = elastic
   std::vector<Vec3> frac_final;  // second end point of a NEB path (block atoms_final)
 };
 
