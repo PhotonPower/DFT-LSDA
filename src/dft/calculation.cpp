@@ -350,6 +350,7 @@ void Calculation::move_atoms(const std::vector<Vec3>& frac) {
   }
   setup_structure();
   mixer_.reset();
+  proj_valid_ = false;  // the projectors move with the atoms
 }
 
 // =====================================================================================
@@ -687,11 +688,13 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
       const int iters = first_solve_ && !lcao_start_ok_ ? 5 * max_iter : max_iter;
       const EigensolverResult r = p_.eigensolver == "lobpcg"
                                       ? lobpcg(h, psi_[ks], eig_[ks], tb, n_required, iters, &proj_psi_[ks])
-                                      : ppcg(h, psi_[ks], eig_[ks], tb, n_required, iters, &proj_psi_[ks], p_.ppcg_block);
+                                      : ppcg(h, psi_[ks], eig_[ks], tb, n_required, iters, &proj_psi_[ks], p_.ppcg_block, 5,
+                                             proj_valid_ && !first_solve_);
       max_residual = std::max(max_residual, r.max_residual);
       not_converged += r.not_converged;
     }
   }
+  proj_valid_ = true;
 }
 
 // =====================================================================================
@@ -1192,6 +1195,7 @@ bool Calculation::adopt_state(Calculation&& o) {
   have_occ_ = o.have_occ_;
   have_density_ = true;
   first_solve_ = o.first_solve_;
+  proj_valid_ = false;
   mixer_.reset();
   return true;
 }
@@ -1346,6 +1350,7 @@ bool Calculation::load_checkpoint(const std::string& path) {
   psi_ = std::move(psi);
   eig_ = std::move(eig);
   first_solve_ = false;
+  proj_valid_ = false;
   int has_mixer = 0;
   double dr2 = 0.0;
   if (std::fread(&has_mixer, sizeof has_mixer, 1, fc.f) == 1 && has_mixer && std::fread(&dr2, sizeof dr2, 1, fc.f) == 1 &&

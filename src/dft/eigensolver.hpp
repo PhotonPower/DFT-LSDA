@@ -25,8 +25,11 @@ EigensolverResult lobpcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& 
 // and at the end. All matrix elements are evaluated with the PAW projections (no S x or nonlocal H x
 // vectors), which keeps the dense linear algebra small. block_size = 1 is the cheapest variant,
 // block_size >= number of bands is equivalent to LOBPCG.
+// If px_valid is set, *PX holds the projections beta^H X of the start vectors (saves one projection).
+// The convergence statistics refer to the residuals before the last update (an upper bound in practice).
 EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& eps, const std::vector<double>& tol,
-                       int n_required, int max_iter, CMatrix* PX = nullptr, int block_size = 8, int rr_period = 5);
+                       int n_required, int max_iter, CMatrix* PX = nullptr, int block_size = 8, int rr_period = 5,
+                       bool px_valid = false);
 
 // Rayleigh-Ritz in the span of the m >= nkeep columns of X (which may be linearly dependent);
 // on exit X holds the nkeep lowest Ritz vectors (S-orthonormal). Used to turn atomic orbitals into

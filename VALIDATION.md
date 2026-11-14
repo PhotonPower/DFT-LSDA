@@ -221,6 +221,12 @@ Füllen des Gitters, ein Thread:
 | 70³ | 2.98 ms | 1.78 ms | 1.68 |
 | 72³ | 2.86 ms | 1.77 ms | 1.62 |
 
+Der PPCG-Löser fasst seither Orthonormalisierung und Rayleigh-Ritz zu einem verallgemeinerten
+Eigenproblem zusammen, verwendet die Projektionen ⟨p̃|ψ⟩ des vorigen SCF-Schritts wieder und spart die
+zweite Residuenberechnung; nach Zählung der Matrixprodukte sind das etwa 25 % weniger dichte lineare
+Algebra pro SCF-Schritt. Die Ergebnisse sind unverändert (Regressionstests), die Laufzeit ist **nicht**
+neu gemessen.
+
 Im Programm sank die FFT-Zeit pro Hamilton-Anwendung auf der 15-Atom-Zelle von 32 auf 24 ms; der Wert
 ist wegen thermischer Drosselung des Laptops und unterschiedlicher Bandzahlen pro Aufruf nur grob vergleichbar.
 

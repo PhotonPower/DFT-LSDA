@@ -297,7 +297,7 @@ inline cplx vdot(const cplx* a, const cplx* b, int n) {  // a^H b
 }  // namespace
 
 EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& eps, const std::vector<double>& tol,
-                       int n_required, int max_iter, CMatrix* PX_out, int block_size, int rr_period) {
+                       int n_required, int max_iter, CMatrix* PX_out, int block_size, int rr_period, bool px_valid) {
   const int n = h.npw(), nb = X.cols(), nproj = h.nproj();
   LSDA_CHECK(X.rows() == n && nb <= n, "ppcg: inconsistent dimensions");
   LSDA_CHECK(block_size >= 1, "ppcg: block size must be positive");
@@ -305,7 +305,11 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
   const CMatrix& beta = h.beta();
   EigensolverResult res;
   double t_orth = 0, t_rr = 0, t_res = 0, t_proj = 0, t_band = 0;
-  CMatrix tmp, KX(n, nb), PX = h.project(X.data(), nb);
+  CMatrix tmp, KX(n, nb), PX;
+  if (px_valid && PX_out && PX_out->rows() == nproj && PX_out->cols() == nb)
+    PX = std::move(*PX_out);
+  else
+    PX = h.project(X.data(), nb);
   h.apply_local(X.data(), nb, KX.data());
   eps.assign(nb, 0.0);
 
@@ -360,6 +364,38 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
     if (nproj > 0) right_multiply(PX, G, tmp);
     t_rr += wall_time() - t0;
   };
+  // Orthonormalization and Rayleigh-Ritz in one step: generalized problem (X^H H X) c = theta (X^H S X) c
+  auto rayleigh_ritz_general = [&]() {
+    const double t0 = wall_time();
+    CMatrix DPX, SPX;
+    h.block_multiply(PX, &DPX, &SPX);
+    CMatrix G = overlap(X.data(), nb, KX.data(), nb, n), M = overlap(X.data(), nb, X.data(), nb, n);
+    if (nproj > 0) {
+      gemm('C', 'N', nb, nb, nproj, 1.0, PX.data(), nproj, DPX.data(), nproj, 1.0, G.data(), nb);
+      gemm('C', 'N', nb, nb, nproj, 1.0, PX.data(), nproj, SPX.data(), nproj, 1.0, M.data(), nb);
+    }
+    for (int i = 0; i < nb; ++i) {
+      G(i, i) = G(i, i).real();
+      M(i, i) = M(i, i).real();
+      for (int j = 0; j < i; ++j) {
+        const cplx g = 0.5 * (G(i, j) + std::conj(G(j, i))), m = 0.5 * (M(i, j) + std::conj(M(j, i)));
+        G(i, j) = g;
+        G(j, i) = std::conj(g);
+        M(i, j) = m;
+        M(j, i) = std::conj(m);
+      }
+    }
+    if (eigh_gen(G, M, eps)) {
+      right_multiply(X, G, tmp);
+      right_multiply(KX, G, tmp);
+      if (nproj > 0) right_multiply(PX, G, tmp);
+      t_rr += wall_time() - t0;
+    } else {  // (nearly) dependent vectors
+      t_rr += wall_time() - t0;
+      s_orthonormalize();
+      rayleigh_ritz();
+    }
+  };
   // R = K X - X eps + beta (dH - eps dS) P_X ; returns residual norms
   CMatrix R(n, nb);
   std::vector<double> rnorm;
@@ -387,18 +423,19 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
     t_res += wall_time() - t0;
   };
 
-  s_orthonormalize();
-  rayleigh_ritz();
+  rayleigh_ritz_general();
 
   CMatrix W, KW, PW, P, KP, PP;       // search directions with local images and projections
   std::vector<int> p_col(nb, -1);     // column of P belonging to each band (-1: none)
   bool ritz = true;                   // X currently holds Ritz vectors
-  for (int iter = 0;; ++iter) {
+  bool have_stats = false;
+  for (int iter = 0; iter < max_iter; ++iter) {
     residuals();
+    have_stats = true;
     std::vector<int> active;
     for (int j = 0; j < nb; ++j)
       if (rnorm[j] > tol[j]) active.push_back(j);
-    if (active.empty() || iter >= max_iter) break;
+    if (active.empty()) break;
     res.iterations = iter + 1;
     const int na = static_cast<int>(active.size());
 
@@ -585,6 +622,11 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
     ritz = false;
 
     // ---- restore S-orthonormality; Rayleigh quotients or periodic full Rayleigh-Ritz ----------
+    if (iter + 1 >= max_iter) {  // last update: orthonormalization and Rayleigh-Ritz in one step
+      rayleigh_ritz_general();
+      ritz = true;
+      break;
+    }
     s_orthonormalize();
     if ((iter + 1) % rr_period == 0) {
       rayleigh_ritz();
@@ -598,10 +640,8 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
         eps[j] = (vdot(X.col(j), KX.col(j), n) + (nproj > 0 ? vdot(PX.col(j), D2.col(j), nproj) : cplx(0.0))).real();
     }
   }
-  if (!ritz) {
-    rayleigh_ritz();
-    residuals();
-  }
+  if (!ritz) rayleigh_ritz();
+  if (!have_stats) residuals();
   add_time("  ppcg: orthonormalize", t_orth);
   add_time("  ppcg: Rayleigh-Ritz", t_rr);
   add_time("  ppcg: residuals", t_res);
