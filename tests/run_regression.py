@@ -308,9 +308,41 @@ end
     return failures
 
 
+def noncollinear_test(lsda, pseudo, tmp):
+    """Non-collinear spinor calculation with all moments along a tilted axis must reproduce the collinear
+    energy, moment and forces (spin-rotation invariance without spin-orbit coupling)."""
+    base = CASES["FeAl_forces"]["text"].replace("ecut = 20", "ecut = 15").replace("kpoints = 3 3 3", "kpoints = 2 2 2") \
+        .replace("scf_tol = 1e-11", "scf_tol = 1e-10").replace("eig_tol = 1e-8\n", "")
+    res = {}
+    for name, text in (("col", base), ("nc", base.replace("nspin = 2", "noncollinear = true").replace("Fe 0 0 0 2.0", "Fe 0 0 0 1.2 0 1.6"))):
+        with open(os.path.join(tmp, name + ".in"), "w") as f:
+            f.write(f"prefix = {name}\npseudo_dir = {pseudo}\ncheckpoint_wfc = false\n" + text)
+        out = subprocess.run([lsda, name + ".in"], cwd=tmp, capture_output=True, text=True)
+        if out.returncode != 0:
+            print(f"[FAIL] non-collinear test, run {name}: exit code {out.returncode}\n{out.stdout[-800:]}{out.stderr}")
+            return 1
+        res[name] = json.load(open(os.path.join(tmp, name + ".json")))
+    c, n = res["col"], res["nc"]
+    de = abs(c["free_energy"] - n["free_energy"])
+    dm = abs(c["magnetization"] - n["magnetization"])
+    df = max(abs(x - y) for p, q in zip(c["atoms"], n["atoms"]) for x, y in zip(p["force"], q["force"]))
+    mv = n["magnetization_vector"]
+    tilt = abs(mv[0] / n["magnetization"] - 0.6) + abs(mv[2] / n["magnetization"] - 0.8)
+    ok = de < 1e-8 and dm < 1e-4 and df < 5e-6 and tilt < 5e-3
+    print(f"[{' ok ' if ok else 'FAIL'}] non-collinear = collinear for a rotated moment: dE {de:.1e}, dM {dm:.1e}, dF {df:.1e}")
+    return 0 if ok else 1
+
+
 def main():
     lsda, pseudo = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     show = "--print" in sys.argv
+    if "--only" in sys.argv:  # run a single group of self-contained tests
+        which = sys.argv[sys.argv.index("--only") + 1]
+        groups = {"noncollinear": noncollinear_test, "stress": stress_tests, "relax": relax_and_restart}
+        with tempfile.TemporaryDirectory() as tmp:
+            failures = groups[which](lsda, pseudo, tmp)
+        print("PASSED" if failures == 0 else "FAILED")
+        return 1 if failures else 0
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
         for name, case in CASES.items():
@@ -347,6 +379,7 @@ def main():
         if not show:
             failures += relax_and_restart(lsda, pseudo, tmp)
             failures += stress_tests(lsda, pseudo, tmp)
+            failures += noncollinear_test(lsda, pseudo, tmp)
     if not show:
         print("ALL REGRESSION TESTS PASSED" if failures == 0 else f"{failures} REGRESSION TEST(S) FAILED")
     return 1 if failures else 0

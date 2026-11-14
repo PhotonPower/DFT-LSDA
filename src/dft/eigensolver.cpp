@@ -62,7 +62,6 @@ EigensolverResult lobpcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& 
                          int n_required, int max_iter, CMatrix* PX) {
   const int n = h.npw(), nb = X.cols();
   LSDA_CHECK(X.rows() == n && nb <= n, "lobpcg: inconsistent dimensions");
-  const std::vector<double>& kin = h.basis().kin;
   EigensolverResult res;
   CMatrix HX(n, nb), SX(n, nb), tmp;
   CMatrix W, HW, SW, P, HP, SP;
@@ -121,14 +120,14 @@ EigensolverResult lobpcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& 
       const cplx* x = X.col(j);
       double ek = 0.0, nrm = 0.0;
       for (int i = 0; i < n; ++i) {
-        ek += kin[i] * std::norm(x[i]);
+        ek += h.kinetic(i) * std::norm(x[i]);
         nrm += std::norm(x[i]);
       }
       ek = std::max(ek / nrm, 1e-3);
       const cplx* r = R.col(j);
       cplx* w = W.col(a);
       for (int i = 0; i < n; ++i) {
-        const double t = kin[i] / (1.5 * ek);
+        const double t = h.kinetic(i) / (1.5 * ek);
         const double num = 27.0 + t * (18.0 + t * (12.0 + 8.0 * t));
         w[i] = r[i] * (num / (num + 16.0 * t * t * t * t));
       }
@@ -301,8 +300,6 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
   const int n = h.npw(), nb = X.cols(), nproj = h.nproj();
   LSDA_CHECK(X.rows() == n && nb <= n, "ppcg: inconsistent dimensions");
   LSDA_CHECK(block_size >= 1, "ppcg: block size must be positive");
-  const std::vector<double>& kin = h.basis().kin;
-  const CMatrix& beta = h.beta();
   EigensolverResult res;
   double t_orth = 0, t_rr = 0, t_res = 0, t_proj = 0, t_band = 0;
   CMatrix tmp, KX(n, nb), PX;
@@ -412,7 +409,7 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
       cplx* r = R.col(j);
       for (int i = 0; i < n; ++i) r[i] = kx[i] - eps[j] * x[i];
     }
-    if (nproj > 0) gemm('N', 'N', n, nb, nproj, 1.0, beta.data(), n, DPX.data(), nproj, 1.0, R.data(), n);
+    if (nproj > 0) h.add_nonlocal(DPX, R.data(), nb);
     column_norms(R, rnorm);
     res.max_residual = 0.0;
     res.not_converged = 0;
@@ -448,14 +445,14 @@ EigensolverResult ppcg(const Hamiltonian& h, CMatrix& X, std::vector<double>& ep
       const cplx* x = X.col(j);
       double ek = 0.0, nrm = 0.0;
       for (int i = 0; i < n; ++i) {
-        ek += kin[i] * std::norm(x[i]);
+        ek += h.kinetic(i) * std::norm(x[i]);
         nrm += std::norm(x[i]);
       }
       ek = std::max(ek / nrm, 1e-3);
       const cplx* r = R.col(j);
       cplx* w = W.col(a);
       for (int i = 0; i < n; ++i) {
-        const double t = kin[i] / (1.5 * ek);
+        const double t = h.kinetic(i) / (1.5 * ek);
         const double num = 27.0 + t * (18.0 + t * (12.0 + 8.0 * t));
         w[i] = r[i] * (num / (num + 16.0 * t * t * t * t));
       }

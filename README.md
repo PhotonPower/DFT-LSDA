@@ -91,7 +91,8 @@ end
 | `kpoints`, `kshift` | `1 1 1`, `0 0 0` | Monkhorst-Pack-Gitter, Verschiebung (0 oder 0.5) |
 | `symmetry` | `true` | Raumgruppensymmetrie verwenden |
 | `xc` | aus den Datensätzen | `pw92` (LSDA) oder `pbe`; ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
-| `nspin` | 1 | 2 = spinpolarisiert |
+| `nspin` | 1 | 2 = spinpolarisiert (kollinear) |
+| `noncollinear` | `false` | zweikomponentige Spinoren, Magnetisierung als Vektorfeld; Atomzeilen dann `<Label> x y z mx my mz` (Startmoment als Vektor in µB) |
 | `nbands` | automatisch | Zahl der Bänder |
 | `smearing`, `width` | `cold`, 0.005 Ha | `fermi`, `gauss`, `mp1`, `cold`, `tetrahedron` (ohne Breite; Kräfte und Spannungen sind damit nicht exakt konsistent zur Energie – für Relaxationen eine Verschmierung verwenden) |
 | `fixed_moment` | – | festes Gesamtmoment (µB) |
@@ -180,6 +181,16 @@ Ausgabe: volle 6×6-Matrix, Kompressionsmodul, C₁₁/C₁₂/C₄₄, C′, St
 `<prefix>.elastic.json`. Wie bei `cellrelax` wird `ecut_smooth = 0.5` gesetzt. Scherkonstanten von
 Metallen brauchen sehr dichte k-Gitter (Al: 6³ liefert Unsinn, 12³ ist brauchbar). Der Kompressionsmodul
 ist der Wert für `defect_thermo.py --bulk-modulus`.
+
+## Nichtkollinearer Magnetismus
+
+`noncollinear = true` rechnet mit zweikomponentigen Spinoren; Dichte, Potential und PAW-Dichtematrizen
+haben vier Komponenten (n, m_x, m_y, m_z), das XC-Funktional wird lokal im Spinsystem der Magnetisierung
+ausgewertet. Ohne Spin-Bahn-Kopplung ist die Energie invariant unter gemeinsamer Drehung aller Momente.
+Einschränkungen des jetzigen Stands: nur LSDA (kein PBE), keine Symmetrie und keine Zeitumkehr (volles
+k-Gitter), keine Spin-Bahn-Kopplung, keine Zwangsbedingungen an die Momentrichtungen (sie sind frei und
+können während des SCF drehen); Spannungstensor, Zustandsdichte, Bandstruktur und Wellenfunktions-Checkpoint
+sind in diesem Modus nicht verfügbar. Kräfte, Relaxation, DFT+U und MPI funktionieren.
 
 ## DFT+U
 

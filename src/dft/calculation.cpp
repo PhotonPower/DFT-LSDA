@@ -27,7 +27,9 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   ScopedTimer timer("setup");
   LSDA_CHECK(p_.nspin == 1 || p_.nspin == 2, "nspin must be 1 or 2");
   LSDA_CHECK(p_.eigensolver == "ppcg" || p_.eigensolver == "lobpcg", "eigensolver must be ppcg or lobpcg");
-  nspin_ = p_.nspin;
+  noncol_ = p_.noncollinear;
+  nspin_ = noncol_ ? 1 : p_.nspin;
+  ncomp_ = noncol_ ? 4 : nspin_;
   // exchange-correlation functional: by default the one the PAW datasets were generated with
   {
     std::string from_data;
@@ -53,8 +55,11 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   LSDA_CHECK(p_.ecut_dense >= 4.0 * p_.ecut - 1e-9, "ecut_dense must be at least 4 * ecut");
 
   // ---- symmetry and k-points ----------------------------------------------------------
-  ops_ = find_symmetry(c_, p_.symmetry);
-  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_, &tetra_.map);
+  LSDA_CHECK(!(noncol_ && xc_->is_gga()), "non-collinear magnetism is implemented for the LSDA only");
+  LSDA_CHECK(!(noncol_ && p_.fixed_moment), "fixed_moment is not available for non-collinear calculations");
+  // spin rotations are not part of the symmetry analysis: non-collinear runs use no symmetry and no time reversal
+  ops_ = find_symmetry(c_, p_.symmetry && !noncol_);
+  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_, &tetra_.map, !noncol_);
   for (int d = 0; d < 3; ++d) tetra_.n[d] = p_.kgrid[d];
   tetra_.B = c_.B;
   for (const KPoint& k : kpts_) kweight_.push_back(k.weight);
@@ -87,14 +92,15 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
     for (const Atom& a : c_.atoms) mom += std::abs(a.magmom);
     if (p_.fixed_moment) mom = std::max(mom, std::abs(*p_.fixed_moment));
     nbands_ = static_cast<int>(std::ceil(0.5 * nelec_ * 1.2 + (nspin_ == 2 ? 0.5 * mom : 0.0))) + 4;
+    if (noncol_) nbands_ = static_cast<int>(std::ceil(nelec_ * 1.2)) + 8;  // spinor bands hold one electron each
   }
   int npw_min = basis_[0].npw, npw_max = 0;
   for (const PWBasis& b : basis_) {
     npw_min = std::min(npw_min, b.npw);
     npw_max = std::max(npw_max, b.npw);
   }
-  LSDA_CHECK(nbands_ <= npw_min, "more bands than plane waves");
-  LSDA_CHECK((nspin_ == 1 ? 2.0 : 1.0) * nbands_ * (nspin_ == 1 ? 1 : 2) >= nelec_, "nbands too small");
+  LSDA_CHECK(nbands_ <= (noncol_ ? 2 : 1) * npw_min, "more bands than plane waves");
+  LSDA_CHECK((noncol_ ? 1.0 : 2.0) * nbands_ >= nelec_, "nbands too small");
 
   // ---- reciprocal-space tables of the PAW datasets ------------------------------------
   // table ranges from the actual vector lengths (they differ from the cutoffs if a reference lattice is used)
@@ -141,7 +147,10 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
     logf("  Atoms / species        : %d / %zu\n", c_.natoms(), c_.species.size());
     logf("  Valence electrons      : %.4f\n", nelec_);
     logf("  Exchange-correlation   : %s\n", xc_->name().c_str());
-    logf("  Spin channels / bands  : %d / %d\n", nspin_, nbands_);
+    if (noncol_)
+      logf("  Non-collinear spinors  : %d bands\n", nbands_);
+    else
+      logf("  Spin channels / bands  : %d / %d\n", nspin_, nbands_);
     logf("  Cutoff wavefunctions   : %.2f Ha   (%d - %d plane waves)\n", p_.ecut, npw_min, npw_max);
     if (p_.ecut_smooth > 0.0) logf("  Cutoff smoothing       : %.2f Ha\n", p_.ecut_smooth);
     logf("  Cutoff dense sphere    : %.2f Ha   (%d G-vectors)\n", p_.ecut_dense, ng);
@@ -155,7 +164,7 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
     else
       logf("  Smearing               : %s, width %.5f Ha\n", p_.smearing.c_str(), p_.width);
     logf("  Threads                : %d\n", num_threads());
-    const double mem = 16.0 * npw_max * nbands_ * kpts_.size() * nspin_ / 1048576.0;
+    const double mem = 16.0 * npw_max * nbands_ * kpts_.size() * (noncol_ ? 2 : nspin_) / 1048576.0;
     logf("  Wavefunction storage   : %.1f MB\n", mem);
   }
 
@@ -225,9 +234,10 @@ void Calculation::init_wavefunctions() {
       std::mt19937_64 rng(p_.seed + 7919 * ks0);  // independent of the number of processes
       CMatrix& x = psi_[ks0];
       const PWBasis& b = basis_[ik];
-      x.resize(b.npw, nbands_);
+      const int dim = (noncol_ ? 2 : 1) * b.npw;
+      x.resize(dim, nbands_);
       for (int n = 0; n < nbands_; ++n)
-        for (int ig = 0; ig < b.npw; ++ig) x(ig, n) = cplx(u(rng), u(rng)) / (1.0 + 2.0 * b.kin[ig]);
+        for (int ig = 0; ig < dim; ++ig) x(ig, n) = cplx(u(rng), u(rng)) / (1.0 + 2.0 * b.kin[ig % b.npw]);
     }
   }
   first_solve_ = true;
@@ -274,37 +284,51 @@ CMatrix Calculation::atomic_orbitals(const PWBasis& b) const {
 // Superposition of atomic pseudo valence densities and atomic density matrices.
 void Calculation::init_density() {
   const int ng = gs_.ng, nat = c_.natoms();
-  rho_.assign(nspin_, std::vector<cplx>(ng, 0.0));
-  D_.assign(nat, std::vector<RMatrix>(nspin_));
-  std::vector<double> zeta(nat, 0.0);
+  rho_.assign(ncomp_, std::vector<cplx>(ng, 0.0));
+  D_.assign(nat, std::vector<RMatrix>(ncomp_));
+  // relative spin polarization of every atom: scalar (collinear) or vector (non-collinear)
+  std::vector<Vec3> zeta(nat, Vec3{0, 0, 0});
   std::vector<Vec3> pos(nat);
   for (int a = 0; a < nat; ++a) {
     pos[a] = c_.atom_cart(a);
     const PawSetup& s = c_.setup(a);
-    if (nspin_ == 2) zeta[a] = std::clamp(c_.atoms[a].magmom / s.n_valence, -0.95, 0.95);
+    if (noncol_) {
+      const double m = norm(c_.atoms[a].mvec), z = std::clamp(m / s.n_valence, 0.0, 0.95);
+      if (m > 0.0)
+        for (int d = 0; d < 3; ++d) zeta[a][d] = z * c_.atoms[a].mvec[d] / m;
+    } else if (nspin_ == 2) {
+      zeta[a][2] = std::clamp(c_.atoms[a].magmom / s.n_valence, -0.95, 0.95);
+    }
     const RMatrix d0 = s.atomic_density_matrix();
-    for (int sp = 0; sp < nspin_; ++sp) {
-      D_[a][sp] = d0;
-      const double f = nspin_ == 1 ? 1.0 : 0.5 * (1.0 + (sp == 0 ? zeta[a] : -zeta[a]));
-      for (size_t i = 0; i < d0.size(); ++i) D_[a][sp].data()[i] *= f;
+    for (int c = 0; c < ncomp_; ++c) {
+      D_[a][c] = d0;
+      double f = 1.0;
+      if (noncol_)
+        f = c == 0 ? 1.0 : zeta[a][c - 1];
+      else if (nspin_ == 2)
+        f = 0.5 * (1.0 + (c == 0 ? zeta[a][2] : -zeta[a][2]));
+      for (size_t i = 0; i < d0.size(); ++i) D_[a][c].data()[i] *= f;
     }
   }
   const double inv_vol = 1.0 / c_.volume;
 #pragma omp parallel for schedule(static)
   for (int ig = 0; ig < ng; ++ig) {
     const double* g = &gs_.g[3 * ig];
-    cplx up = 0.0, dn = 0.0;
+    cplx tot = 0.0, m[3] = {0.0, 0.0, 0.0};
     for (int a = 0; a < nat; ++a) {
       const double arg = -(g[0] * pos[a][0] + g[1] * pos[a][1] + g[2] * pos[a][2]);
       const cplx v = cplx(std::cos(arg), std::sin(arg)) * (ff_nvt_[c_.atoms[a].species][ig] * inv_vol);
-      up += v * 0.5 * (1.0 + zeta[a]);
-      dn += v * 0.5 * (1.0 - zeta[a]);
+      tot += v;
+      for (int d = 0; d < 3; ++d) m[d] += v * zeta[a][d];
     }
-    if (nspin_ == 1) {
-      rho_[0][ig] = up + dn;
+    if (noncol_) {
+      rho_[0][ig] = tot;
+      for (int d = 0; d < 3; ++d) rho_[1 + d][ig] = m[d];
+    } else if (nspin_ == 1) {
+      rho_[0][ig] = tot;
     } else {
-      rho_[0][ig] = up;
-      rho_[1][ig] = dn;
+      rho_[0][ig] = 0.5 * (tot + m[2]);
+      rho_[1][ig] = 0.5 * (tot - m[2]);
     }
   }
   // enforce exact charge neutrality of the start density (rescale the valence part)
@@ -312,7 +336,7 @@ void Calculation::init_density() {
   for (int a = 0; a < nat; ++a) {
     const PawSetup& s = c_.setup(a);
     RMatrix dt = D_[a][0];
-    if (nspin_ == 2)
+    if (ncomp_ == 2)
       for (size_t i = 0; i < dt.size(); ++i) dt.data()[i] += D_[a][1].data()[i];
     std::vector<double> Q(s.nL);
     s.multipoles(dt, Q.data());
@@ -320,7 +344,7 @@ void Calculation::init_density() {
   }
   comp += nct_G_[0].real() * c_.volume;
   double nval = 0.0;
-  for (int sp = 0; sp < nspin_; ++sp) nval += rho_[sp][0].real() * c_.volume;
+  for (int sp = 0; sp < (ncomp_ == 2 ? 2 : 1); ++sp) nval += rho_[sp][0].real() * c_.volume;
   const double scale = -comp / nval;
   if (p_.verbosity > 0) logf("  Start density          : pseudo valence charge %.6f, rescaled by %.8f\n", nval, scale);
   LSDA_CHECK(std::abs(scale - 1.0) < 0.05, "inconsistent atomic start density");
@@ -344,7 +368,7 @@ void Calculation::move_atoms(const std::vector<Vec3>& frac) {
     r_new[a] = c_.atom_cart(a);
   }
   if (have_density_) {
-    const double f = (nspin_ == 2 ? 0.5 : 1.0) / c_.volume;
+    const double f = (ncomp_ == 2 ? 0.5 : 1.0) / c_.volume;
 #pragma omp parallel for schedule(static)
     for (int ig = 0; ig < ng; ++ig) {
       const double* g = &gs_.g[3 * ig];
@@ -354,7 +378,7 @@ void Calculation::move_atoms(const std::vector<Vec3>& frac) {
         const double a_old = -(g[0] * r_old[a][0] + g[1] * r_old[a][1] + g[2] * r_old[a][2]);
         d += ff_nvt_[c_.atoms[a].species][ig] * (cplx(std::cos(a_new), std::sin(a_new)) - cplx(std::cos(a_old), std::sin(a_old)));
       }
-      for (int s = 0; s < nspin_; ++s) rho_[s][ig] += f * d;
+      for (int s = 0; s < (ncomp_ == 2 ? 2 : 1); ++s) rho_[s][ig] += f * d;  // charge component(s) only
     }
   }
   setup_structure();
@@ -462,13 +486,13 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
   for (int a = 0; a < nat; ++a) {
     const PawSetup& s = c_.setup(a);
     RMatrix dt = D[a][0];
-    if (nspin_ == 2)
+    if (ncomp_ == 2)
       for (size_t i = 0; i < dt.size(); ++i) dt.data()[i] += D[a][1].data()[i];
     Q[a].resize(s.nL);
     s.multipoles(dt, Q[a].data());
   }
   std::vector<cplx> ntot(ng), rho_t(ng, 0.0);
-  for (int ig = 0; ig < ng; ++ig) ntot[ig] = rho[0][ig] + (nspin_ == 2 ? rho[1][ig] : cplx(0.0)) + nct_G_[ig];
+  for (int ig = 0; ig < ng; ++ig) ntot[ig] = rho[0][ig] + (ncomp_ == 2 ? rho[1][ig] : cplx(0.0)) + nct_G_[ig];
   add_compensation(Q, rho_t);
   for (int ig = 0; ig < ng; ++ig) rho_t[ig] += ntot[ig];
   LSDA_CHECK(std::abs(rho_t[0]) * vol < 1e-5, strf("smooth charge is not neutral (%.3e)", std::abs(rho_t[0]) * vol));
@@ -490,7 +514,34 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
   // ---- exchange-correlation on the fine grid ----------------------------------------------
   std::vector<double> nup(nfine), ndn, exc(nfine), vup(nfine), vdn;
   CVec work(nfine);
-  for (int s = 0; s < nspin_; ++s) {
+  std::vector<std::vector<double>> vnc;  // non-collinear: dE/dn and dE/dm_c on the fine grid
+  if (noncol_) {
+    // local spin frame: n_up/down = (n +- |m|)/2;  dE/dn = (v_up + v_dn)/2,  dE/dm = (v_up - v_dn)/2 m/|m|
+    std::vector<std::vector<double>> comp(4, std::vector<double>(nfine));
+    for (int c = 0; c < 4; ++c) {
+      std::fill(work.begin(), work.end(), cplx(0.0));
+      for (int ig = 0; ig < ng; ++ig) work[gs_.idx_fine[ig]] = rho[c][ig] + (c == 0 ? nct_G_[ig] : cplx(0.0));
+      fft_f_.backward(work.data());
+      for (size_t i = 0; i < nfine; ++i) comp[c][i] = work[i].real();
+    }
+    ndn.resize(nfine);
+    vdn.resize(nfine);
+#pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < nfine; ++i) {
+      const double m = std::sqrt(comp[1][i] * comp[1][i] + comp[2][i] * comp[2][i] + comp[3][i] * comp[3][i]);
+      nup[i] = 0.5 * (comp[0][i] + m);
+      ndn[i] = 0.5 * (comp[0][i] - m);
+    }
+    xc_->evaluate(nfine, nup.data(), ndn.data(), exc.data(), vup.data(), vdn.data());
+    vnc.assign(4, std::vector<double>(nfine));
+#pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < nfine; ++i) {
+      const double m = nup[i] - ndn[i], b = 0.5 * (vup[i] - vdn[i]);
+      vnc[0][i] = 0.5 * (vup[i] + vdn[i]);
+      for (int c = 1; c < 4; ++c) vnc[c][i] = m > 1e-14 ? b * comp[c][i] / m : 0.0;
+    }
+  }
+  for (int s = 0; s < (noncol_ ? 0 : nspin_); ++s) {
     std::fill(work.begin(), work.end(), cplx(0.0));
     for (int ig = 0; ig < ng; ++ig) work[gs_.idx_fine[ig]] = rho[s][ig] + (nspin_ == 2 ? 0.5 : 1.0) * nct_G_[ig];
     fft_f_.backward(work.data());
@@ -499,7 +550,9 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
     const double f = nspin_ == 2 ? 1.0 : 0.5;
     for (size_t i = 0; i < nfine; ++i) dst[i] = f * work[i].real();
   }
-  if (xc_->is_gga()) {
+  if (noncol_) {
+    // already evaluated above
+  } else if (xc_->is_gga()) {
     // ---- gradient-corrected functional (White & Bird scheme) --------------------------------
     // grad n_s from i G n_s(G) on the dense sphere; potential v_s = de/dn_s - div(de/d grad n_s)
     const double fs = nspin_ == 2 ? 1.0 : 0.5;
@@ -576,8 +629,8 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
   e.xc = exc_sum * vol / static_cast<double>(nfine);
   if (build) {
     double vn = 0.0;
-    const std::vector<double>& nd = nspin_ == 2 ? ndn : nup;
-    const std::vector<double>& vd = nspin_ == 2 ? vdn : vup;
+    const std::vector<double>& nd = (nspin_ == 2 || noncol_) ? ndn : nup;
+    const std::vector<double>& vd = (nspin_ == 2 || noncol_) ? vdn : vup;
 #pragma omp parallel for schedule(static) reduction(+ : vn)
     for (size_t i = 0; i < nfine; ++i) vn += vup[i] * nup[i] + vd[i] * nd[i];
     vxc_n_ = vn * vol / static_cast<double>(nfine);
@@ -587,17 +640,19 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
   std::vector<std::vector<double>> W;
   if (build) {
     vH_G_ = vh;
-    veff_G_.assign(nspin_, std::vector<cplx>(ng));
-    vcoarse_.assign(nspin_, std::vector<double>(fft_c_.size()));
+    veff_G_.assign(ncomp_, std::vector<cplx>(ng));
+    vcoarse_.assign(ncomp_, std::vector<double>(fft_c_.size()));
     std::vector<double> vsmooth(nfine);  // Hartree + zero potential in real space
     std::fill(work.begin(), work.end(), cplx(0.0));
     for (int ig = 0; ig < ng; ++ig) work[gs_.idx_fine[ig]] = vh[ig] + vbar_G_[ig];
     fft_f_.backward(work.data());
     for (size_t i = 0; i < nfine; ++i) vsmooth[i] = work[i].real();
     CVec wc(fft_c_.size());
-    for (int s = 0; s < nspin_; ++s) {
-      const std::vector<double>& vxc = s == 0 ? vup : vdn;
-      for (size_t i = 0; i < nfine; ++i) work[i] = vsmooth[i] + vxc[i];
+    for (int s = 0; s < ncomp_; ++s) {
+      // collinear: one potential per spin; non-collinear: v (with Hartree and zero potential) and B_x, B_y, B_z
+      const std::vector<double>& vxc = noncol_ ? vnc[s] : (s == 0 ? vup : vdn);
+      const double smooth = (noncol_ && s > 0) ? 0.0 : 1.0;
+      for (size_t i = 0; i < nfine; ++i) work[i] = smooth * vsmooth[i] + vxc[i];
       fft_f_.forward(work.data());
       const double inv = 1.0 / static_cast<double>(nfine);
       std::fill(wc.begin(), wc.end(), cplx(0.0));
@@ -609,7 +664,7 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
       for (size_t i = 0; i < wc.size(); ++i) vcoarse_[s][i] = wc[i].real();
     }
     project_on_shape(vh, W);
-    dH_.assign(nat, std::vector<RMatrix>(nspin_));
+    dH_.assign(nat, std::vector<RMatrix>(ncomp_));
   }
 
   // ---- atomic (on-site) corrections ---------------------------------------------------------
@@ -617,9 +672,9 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
 #pragma omp parallel for schedule(dynamic, 1) reduction(+ : eon)
   for (int a = 0; a < nat; ++a) {
     const PawSetup& s = c_.setup(a);
-    eon += s.onsite(nspin_, D[a].data(), build ? dH_[a].data() : nullptr, *xc_);
+    eon += s.onsite(ncomp_, D[a].data(), build ? dH_[a].data() : nullptr, *xc_);
     if (build)
-      for (int sp = 0; sp < nspin_; ++sp)
+      for (int sp = 0; sp < (noncol_ ? 1 : nspin_); ++sp)  // the electrostatic term acts on the charge only
         for (int L = 0; L < s.nL; ++L) {
           const double w = W[a][L];
           const double* d = &s.Delta_Lij[static_cast<size_t>(L) * s.ni * s.ni];
@@ -635,7 +690,7 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
 // int v~ n~_val + sum dH D  (the potential-energy part contained in the band energy)
 double Calculation::double_counting(const RhoG& rho, const DMat& D) const {
   double dc = 0.0;
-  for (int s = 0; s < nspin_; ++s) {
+  for (int s = 0; s < ncomp_; ++s) {
     double sum = 0.0;
     const int ng = gs_.ng;
 #pragma omp parallel for schedule(static) reduction(+ : sum)
@@ -643,7 +698,7 @@ double Calculation::double_counting(const RhoG& rho, const DMat& D) const {
     dc += sum * c_.volume;
   }
   for (int a = 0; a < c_.natoms(); ++a)
-    for (int s = 0; s < nspin_; ++s)
+    for (int s = 0; s < ncomp_; ++s)
       for (size_t i = 0; i < D[a][s].size(); ++i) dc += dH_[a][s].data()[i] * D[a][s].data()[i];
   return dc;
 }
@@ -651,12 +706,27 @@ double Calculation::double_counting(const RhoG& rho, const DMat& D) const {
 // =====================================================================================
 //  Band structure
 // =====================================================================================
+Hamiltonian Calculation::hamiltonian(int ik, int s, const Projectors& proj) const {
+  const int nat = c_.natoms();
+  std::vector<const RMatrix*> ds(nat);
+  for (int a = 0; a < nat; ++a) ds[a] = &dS_[a];
+  if (noncol_) {
+    std::vector<std::array<const RMatrix*, 4>> dh(nat);
+    for (int a = 0; a < nat; ++a) dh[a] = {&dH_[a][0], &dH_[a][1], &dH_[a][2], &dH_[a][3]};
+    return Hamiltonian(basis_[ik], fft_c_, std::array<const double*, 4>{vcoarse_[0].data(), vcoarse_[1].data(), vcoarse_[2].data(), vcoarse_[3].data()},
+                       proj, std::move(dh), std::move(ds));
+  }
+  std::vector<const RMatrix*> dh(nat);
+  for (int a = 0; a < nat; ++a) dh[a] = &dH_[a][s];
+  return Hamiltonian(basis_[ik], fft_c_, vcoarse_[s].data(), proj, std::move(dh), std::move(ds));
+}
+
 void Calculation::solve_bands(double tol, int max_iter, double& max_residual, int& not_converged) {
   ScopedTimer timer("eigensolver");
   const int nk = static_cast<int>(kpts_.size()), nat = c_.natoms();
   max_residual = 0.0;
   not_converged = 0;
-  const double deg = nspin_ == 1 ? 2.0 : 1.0;
+  const double deg = (nspin_ == 1 && !noncol_) ? 2.0 : 1.0;
   for (int ik = 0; ik < nk; ++ik) {
     if (!par::owns(ik)) {  // eigenvalues of other processes arrive through the reduction below
       for (int s = 0; s < nspin_; ++s) std::fill(eig_[static_cast<size_t>(ik) * nspin_ + s].begin(), eig_[static_cast<size_t>(ik) * nspin_ + s].end(), 0.0);
@@ -667,22 +737,20 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
     add_time("  projectors (k-point)", wall_time() - tp);
     for (int s = 0; s < nspin_; ++s) {
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
-      std::vector<const RMatrix*> dh(nat), ds(nat);
-      for (int a = 0; a < nat; ++a) {
-        dh[a] = &dH_[a][s];
-        ds[a] = &dS_[a];
-      }
-      const Hamiltonian h(basis_[ik], fft_c_, vcoarse_[s].data(), proj, dh, ds);
+      const Hamiltonian h = hamiltonian(ik, s, proj);
       if (first_solve_) {
         // start vectors: lowest states in the span of the atomic orbitals, padded with random vectors
         const double t0 = wall_time();
-        CMatrix start = atomic_orbitals(basis_[ik]);
-        const int nao = start.cols(), npw = basis_[ik].npw;
+        const CMatrix ao = atomic_orbitals(basis_[ik]);
+        const int npw = basis_[ik].npw, dim = h.npw(), nao = (noncol_ ? 2 : 1) * ao.cols();
         const int nrand = std::max(0, nbands_ - nao) + (nao < nbands_ ? 0 : std::min(4, nbands_));
-        CMatrix all(npw, nao + nrand);
-        std::copy(start.data(), start.data() + start.size(), all.data());
-        for (int n = 0; n < nrand; ++n) std::copy(psi_[ks].col(n), psi_[ks].col(n) + npw, all.col(nao + n));
-        if (nao >= nbands_ / 2 && nao + nrand <= npw && subspace_start(h, all, nbands_))
+        CMatrix all(dim, nao + nrand);
+        for (int j = 0; j < ao.cols(); ++j) {
+          std::copy(ao.col(j), ao.col(j) + npw, all.col(j));  // spin up (or the only component)
+          if (noncol_) std::copy(ao.col(j), ao.col(j) + npw, all.col(ao.cols() + j) + npw);  // spin down
+        }
+        for (int n = 0; n < nrand; ++n) std::copy(psi_[ks].col(n), psi_[ks].col(n) + dim, all.col(nao + n));
+        if (nao >= nbands_ / 2 && nao + nrand <= dim && subspace_start(h, all, nbands_))
           psi_[ks] = std::move(all);
         else
           lcao_start_ok_ = false;
@@ -728,17 +796,85 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
   ScopedTimer timer("density");
   const int nk = static_cast<int>(kpts_.size()), nat = c_.natoms(), ng = gs_.ng;
   const size_t nc = fft_c_.size();
-  rho.assign(nspin_, std::vector<cplx>(ng, 0.0));
-  D.assign(nat, std::vector<RMatrix>(nspin_));
+  rho.assign(ncomp_, std::vector<cplx>(ng, 0.0));
+  D.assign(nat, std::vector<RMatrix>(ncomp_));
   for (int a = 0; a < nat; ++a)
-    for (int s = 0; s < nspin_; ++s) D[a][s].resize(c_.setup(a).ni, c_.setup(a).ni);
+    for (int s = 0; s < ncomp_; ++s) D[a][s].resize(c_.setup(a).ni, c_.setup(a).ni);
   std::vector<int> offset(nat);
   for (int a = 0, off = 0; a < nat; ++a) {
     offset[a] = off;
     off += c_.setup(a).ni;
   }
 
-  for (int s = 0; s < nspin_; ++s) {
+  if (noncol_) {
+    // spinors: n = |psi_up|^2 + |psi_dn|^2, m = psi^+ sigma psi; D^c_ij = Re sum_ab P*_ia sigma^c_ab P_jb
+    std::vector<std::vector<double>> rr(4, std::vector<double>(nc, 0.0));
+    for (int ik = 0; ik < nk; ++ik) {
+      if (!par::owns(ik)) continue;
+      const CMatrix& x = psi_[ik];
+      const PWBasis& b = basis_[ik];
+      const std::vector<double>& f = occ_.f[ik];
+#pragma omp parallel
+      {
+        std::vector<std::vector<double>> acc(4, std::vector<double>(nc, 0.0));
+        CVec wu(nc), wd(nc);
+#pragma omp for schedule(dynamic, 1) nowait
+        for (int n = 0; n < nbands_; ++n) {
+          const double w = f[n] * b.weight / c_.volume;
+          if (std::abs(w) < 1e-16) continue;
+          std::fill(wu.begin(), wu.end(), cplx(0.0));
+          std::fill(wd.begin(), wd.end(), cplx(0.0));
+          const cplx* xn = x.col(n);
+          for (int ig = 0; ig < b.npw; ++ig) {
+            wu[b.idx[ig]] = xn[ig];
+            wd[b.idx[ig]] = xn[b.npw + ig];
+          }
+          fft_c_.backward_pruned(wu.data(), b.columns, b.planes);
+          fft_c_.backward_pruned(wd.data(), b.columns, b.planes);
+          for (size_t i = 0; i < nc; ++i) {
+            const double uu = std::norm(wu[i]), dd = std::norm(wd[i]);
+            const cplx ud = std::conj(wu[i]) * wd[i];
+            acc[0][i] += w * (uu + dd);
+            acc[1][i] += w * 2.0 * ud.real();
+            acc[2][i] += w * 2.0 * ud.imag();
+            acc[3][i] += w * (uu - dd);
+          }
+        }
+#pragma omp critical
+        for (int c = 0; c < 4; ++c)
+          for (size_t i = 0; i < nc; ++i) rr[c][i] += acc[c][i];
+      }
+      const CMatrix& P = proj_psi_[ik];
+      const int nph = P.rows() / 2;  // projections: spin-up block followed by the spin-down block
+      for (int a = 0; a < nat; ++a) {
+        const int ni = c_.setup(a).ni, off = offset[a];
+        for (int n = 0; n < nbands_; ++n) {
+          const double w = f[n] * b.weight;
+          if (std::abs(w) < 1e-16) continue;
+          for (int j = 0; j < ni; ++j) {
+            const cplx ju = P(off + j, n), jd = P(nph + off + j, n);
+            for (int i = 0; i < ni; ++i) {
+              const cplx iu = std::conj(P(off + i, n)), id = std::conj(P(nph + off + i, n));
+              D[a][0](i, j) += w * (iu * ju + id * jd).real();
+              D[a][1](i, j) += w * (iu * jd + id * ju).real();
+              D[a][2](i, j) += w * (cplx(0.0, -1.0) * iu * jd + cplx(0.0, 1.0) * id * ju).real();
+              D[a][3](i, j) += w * (iu * ju - id * jd).real();
+            }
+          }
+        }
+      }
+    }
+    for (int c = 0; c < 4; ++c) {
+      par::sum(rr[c].data(), nc);
+      CVec work(nc);
+      for (size_t i = 0; i < nc; ++i) work[i] = rr[c][i];
+      fft_c_.forward(work.data());
+      const double inv = 1.0 / static_cast<double>(nc);
+      for (int ig = 0; ig < ng; ++ig)
+        if (gs_.idx_coarse[ig] >= 0) rho[c][ig] = work[gs_.idx_coarse[ig]] * inv;
+    }
+  }
+  for (int s = 0; s < (noncol_ ? 0 : nspin_); ++s) {
     std::vector<double> rho_r(nc, 0.0);
     for (int ik = 0; ik < nk; ++ik) {
       if (!par::owns(ik)) continue;
@@ -832,7 +968,7 @@ void Calculation::symmetrize_density(RhoG& rho) const {
 void Calculation::symmetrize_D(DMat& D) const {
   const int nops = static_cast<int>(ops_.size()), nat = c_.natoms();
   if (nops == 1) return;
-  DMat out(nat, std::vector<RMatrix>(nspin_));
+  DMat out(nat, std::vector<RMatrix>(ncomp_));
   for (int b = 0; b < nat; ++b) {
     const int is = c_.atoms[b].species, ni = c_.setup(b).ni;
     for (int s = 0; s < nspin_; ++s) {
@@ -869,6 +1005,7 @@ void Calculation::setup_mixer() {
   const int ng = gs_.ng;
   size_t nd = 0;
   for (int a = 0; a < c_.natoms(); ++a) nd += static_cast<size_t>(c_.setup(a).ni) * c_.setup(a).ni;
+  const int nmag = ncomp_ == 2 ? 1 : (ncomp_ == 4 ? 3 : 0);  // magnetization components
   std::vector<double> w, pre;
   const double vol = c_.volume, q02 = p_.kerker_q0 * p_.kerker_q0;
   // G = 0 of the total density carries no Hartree energy (weight 0) but must be mixed with the same
@@ -884,77 +1021,80 @@ void Calculation::setup_mixer() {
       pre.push_back(p_.mix_alpha * g2 / (g2 + q02));
     }
   }
-  const double wd_scale = 1.0;
-  if (nspin_ == 2) {
-    const double wmag = 4 * pi * vol / gs_.g2[1];
+  const double wmag = 4 * pi * vol / gs_.g2[1];
+  for (int m = 0; m < nmag; ++m)
     for (int ig = 0; ig < ng; ++ig)
       for (int c = 0; c < 2; ++c) {
         w.push_back(wmag);
         pre.push_back(p_.mix_alpha_mag);
       }
-  }
   for (size_t i = 0; i < nd; ++i) {
-    w.push_back(wd_scale);
+    w.push_back(1.0);
     pre.push_back(p_.mix_alpha);
   }
-  if (nspin_ == 2)
+  for (int m = 0; m < nmag; ++m)
     for (size_t i = 0; i < nd; ++i) {
-      w.push_back(wd_scale);
+      w.push_back(1.0);
       pre.push_back(p_.mix_alpha_mag);
     }
   mixer_ = Mixer(std::move(w), std::move(pre), p_.mix_history);
 }
 
+// charge and magnetization components of the stored quantities: collinear data are kept as (up, down),
+// non-collinear data as (n, m_x, m_y, m_z)
 std::vector<double> Calculation::pack(const RhoG& rho, const DMat& D) const {
-  const int ng = gs_.ng;
+  const int ng = gs_.ng, nmag = ncomp_ == 2 ? 1 : (ncomp_ == 4 ? 3 : 0);
   std::vector<double> x;
   for (int ig = 0; ig < ng; ++ig) {
-    const cplx t = rho[0][ig] + (nspin_ == 2 ? rho[1][ig] : cplx(0.0));
+    const cplx t = rho[0][ig] + (ncomp_ == 2 ? rho[1][ig] : cplx(0.0));
     x.push_back(t.real());
     x.push_back(t.imag());
   }
-  if (nspin_ == 2)
+  for (int m = 0; m < nmag; ++m)
     for (int ig = 0; ig < ng; ++ig) {
-      const cplx m = rho[0][ig] - rho[1][ig];
-      x.push_back(m.real());
-      x.push_back(m.imag());
+      const cplx v = ncomp_ == 2 ? rho[0][ig] - rho[1][ig] : rho[1 + m][ig];
+      x.push_back(v.real());
+      x.push_back(v.imag());
     }
   for (int a = 0; a < c_.natoms(); ++a)
-    for (size_t i = 0; i < D[a][0].size(); ++i) x.push_back(D[a][0].data()[i] + (nspin_ == 2 ? D[a][1].data()[i] : 0.0));
-  if (nspin_ == 2)
+    for (size_t i = 0; i < D[a][0].size(); ++i) x.push_back(D[a][0].data()[i] + (ncomp_ == 2 ? D[a][1].data()[i] : 0.0));
+  for (int m = 0; m < nmag; ++m)
     for (int a = 0; a < c_.natoms(); ++a)
-      for (size_t i = 0; i < D[a][0].size(); ++i) x.push_back(D[a][0].data()[i] - D[a][1].data()[i]);
+      for (size_t i = 0; i < D[a][0].size(); ++i)
+        x.push_back(ncomp_ == 2 ? D[a][0].data()[i] - D[a][1].data()[i] : D[a][1 + m].data()[i]);
   return x;
 }
 
 void Calculation::unpack(const std::vector<double>& x, RhoG& rho, DMat& D) const {
-  const int ng = gs_.ng;
+  const int ng = gs_.ng, nmag = ncomp_ == 2 ? 1 : (ncomp_ == 4 ? 3 : 0);
   size_t p = 0;
-  std::vector<cplx> tot(ng), mag(ng, 0.0);
+  std::vector<cplx> tot(ng);
+  std::vector<std::vector<cplx>> mag(nmag, std::vector<cplx>(ng));
   for (int ig = 0; ig < ng; ++ig, p += 2) tot[ig] = cplx(x[p], x[p + 1]);
-  if (nspin_ == 2)
-    for (int ig = 0; ig < ng; ++ig, p += 2) mag[ig] = cplx(x[p], x[p + 1]);
+  for (int m = 0; m < nmag; ++m)
+    for (int ig = 0; ig < ng; ++ig, p += 2) mag[m][ig] = cplx(x[p], x[p + 1]);
   for (int ig = 0; ig < ng; ++ig) {
-    if (nspin_ == 1) {
-      rho[0][ig] = tot[ig];
+    if (ncomp_ == 2) {
+      rho[0][ig] = 0.5 * (tot[ig] + mag[0][ig]);
+      rho[1][ig] = 0.5 * (tot[ig] - mag[0][ig]);
     } else {
-      rho[0][ig] = 0.5 * (tot[ig] + mag[ig]);
-      rho[1][ig] = 0.5 * (tot[ig] - mag[ig]);
+      rho[0][ig] = tot[ig];
+      for (int m = 0; m < nmag; ++m) rho[1 + m][ig] = mag[m][ig];
     }
   }
-  const size_t ptot = p;
   size_t nd = 0;
   for (int a = 0; a < c_.natoms(); ++a) nd += D[a][0].size();
   size_t q = 0;
   for (int a = 0; a < c_.natoms(); ++a)
     for (size_t i = 0; i < D[a][0].size(); ++i, ++q) {
-      const double t = x[ptot + q];
-      if (nspin_ == 1) {
-        D[a][0].data()[i] = t;
-      } else {
-        const double m = x[ptot + nd + q];
+      const double t = x[p + q];
+      if (ncomp_ == 2) {
+        const double m = x[p + nd + q];
         D[a][0].data()[i] = 0.5 * (t + m);
         D[a][1].data()[i] = 0.5 * (t - m);
+      } else {
+        D[a][0].data()[i] = t;
+        for (int m = 0; m < nmag; ++m) D[a][1 + m].data()[i] = x[p + (1 + m) * nd + q];
       }
     }
 }
@@ -993,7 +1133,7 @@ bool Calculation::scf() {
     first_solve_ = false;
     restarted_ = false;
 
-    occ_ = compute_occupations(eig_, kweight_, nspin_, nelec_, smearing_, p_.width, p_.fixed_moment, &tetra_);
+    occ_ = compute_occupations(eig_, kweight_, nspin_, nelec_, smearing_, p_.width, p_.fixed_moment, &tetra_, noncol_ ? 1.0 : 0.0);
     have_occ_ = true;
 
     RhoG rho_out;
@@ -1092,6 +1232,15 @@ bool Calculation::scf() {
       }
       logf("%s\n", line.c_str());
     }
+    if (noncol_) {
+      const Vec3 mt = magnetization_vector();
+      logf("  Total magnetization      (%.6f, %.6f, %.6f) mu_B,  |M| = %.6f\n", mt[0], mt[1], mt[2], norm(mt));
+      const std::vector<Vec3> mv = local_moment_vectors();
+      logf("  Moment vectors inside the PAW spheres (mu_B):\n");
+      for (int a = 0; a < c_.natoms(); ++a)
+        logf("    %4d %-4s %10.5f %10.5f %10.5f   |m| = %.5f\n", a + 1, c_.species[c_.atoms[a].species].name.c_str(), mv[a][0], mv[a][1],
+             mv[a][2], norm(mv[a]));
+    }
     if (nspin_ == 2) {
       logf("  Total magnetization      %12.6f mu_B\n", total_magnetization());
       const std::vector<double> m = local_moments();
@@ -1105,6 +1254,7 @@ bool Calculation::scf() {
 
 void Calculation::write_dos(const std::string& path, double width, int npoints) const {
   LSDA_CHECK(have_occ_, "write_dos: run scf() first");
+  LSDA_CHECK(!noncol_, "the density of states is not implemented for non-collinear calculations");
   LSDA_CHECK(width > 0.0 && npoints > 1, "write_dos: width and number of points must be positive");
   const int nat = c_.natoms(), nk = static_cast<int>(kpts_.size());
   int lmax = 0;
@@ -1195,9 +1345,9 @@ void Calculation::write_cube(const std::string& path, bool magnetization) const 
   for (int ig = 0; ig < gs_.ng; ++ig) {
     cplx v;
     if (magnetization)
-      v = nspin_ == 2 ? rho_[0][ig] - rho_[1][ig] : cplx(0.0);
+      v = ncomp_ == 2 ? rho_[0][ig] - rho_[1][ig] : (noncol_ ? rho_[3][ig] : cplx(0.0));  // non-collinear: z component
     else
-      v = rho_[0][ig] + (nspin_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
+      v = rho_[0][ig] + (ncomp_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
     work[gs_.idx_fine[ig]] = v;
   }
   fft_f_.backward(work.data());
@@ -1220,6 +1370,7 @@ void Calculation::write_cube(const std::string& path, bool magnetization) const 
 
 std::vector<std::vector<double>> Calculation::eigenvalues_at(const Vec3& kfrac, double tol, int max_iter) {
   LSDA_CHECK(have_occ_, "eigenvalues_at: run scf() first");
+  LSDA_CHECK(!noncol_, "band structures are not implemented for non-collinear calculations");
   const int nat = c_.natoms();
   const PWBasis b = make_pw_basis(c_, KPoint{kfrac, 0.0}, p_.ecut, fft_c_, p_.ecut_smooth);
   LSDA_CHECK(b.npw >= nbands_, "eigenvalues_at: fewer plane waves than bands");
@@ -1252,27 +1403,58 @@ std::vector<std::vector<double>> Calculation::eigenvalues_at(const Vec3& kfrac, 
   return out;
 }
 
-std::vector<double> Calculation::local_moments() const {
-  std::vector<double> m(c_.natoms(), 0.0);
-  if (nspin_ == 1) return m;
+std::vector<Vec3> Calculation::local_moment_vectors() const {
+  std::vector<Vec3> m(c_.natoms(), Vec3{0, 0, 0});
   for (int a = 0; a < c_.natoms(); ++a) {
     const PawSetup& s = c_.setup(a);
-    for (int ij = 0; ij < s.ni * s.ni; ++ij) m[a] += (D_[a][0].data()[ij] - D_[a][1].data()[ij]) * s.dN.data()[ij];
+    for (int ij = 0; ij < s.ni * s.ni; ++ij) {
+      if (noncol_)
+        for (int d = 0; d < 3; ++d) m[a][d] += D_[a][1 + d].data()[ij] * s.dN.data()[ij];
+      else if (ncomp_ == 2)
+        m[a][2] += (D_[a][0].data()[ij] - D_[a][1].data()[ij]) * s.dN.data()[ij];
+    }
   }
   return m;
 }
+
+std::vector<double> Calculation::local_moments() const {
+  std::vector<double> m(c_.natoms(), 0.0);
+  const std::vector<Vec3> v = local_moment_vectors();
+  for (int a = 0; a < c_.natoms(); ++a) m[a] = noncol_ ? norm(v[a]) : v[a][2];
+  return m;
+}
+
+// total moment of the all-electron density: smooth part plus the augmentation, M_c = Omega m~_c(G=0) + sum D^c_ij dS_ij
+Vec3 Calculation::magnetization_vector() const {
+  Vec3 m{0, 0, 0};
+  if (!noncol_) {
+    m[2] = occ_.n_spin[0] - occ_.n_spin[1];
+    return m;
+  }
+  for (int d = 0; d < 3; ++d) {
+    m[d] = rho_[1 + d][0].real() * c_.volume;
+    for (int a = 0; a < c_.natoms(); ++a) {
+      const PawSetup& s = c_.setup(a);
+      for (int ij = 0; ij < s.ni * s.ni; ++ij) m[d] += D_[a][1 + d].data()[ij] * s.dS.data()[ij];
+    }
+  }
+  return m;
+}
+
+double Calculation::total_magnetization() const { return noncol_ ? norm(magnetization_vector()) : occ_.n_spin[0] - occ_.n_spin[1]; }
 
 std::vector<double> Calculation::local_charges() const {
   std::vector<double> q(c_.natoms(), 0.0);
   for (int a = 0; a < c_.natoms(); ++a) {
     const PawSetup& s = c_.setup(a);
-    for (int sp = 0; sp < nspin_; ++sp)
+    for (int sp = 0; sp < (ncomp_ == 2 ? 2 : 1); ++sp)
       for (int ij = 0; ij < s.ni * s.ni; ++ij) q[a] += D_[a][sp].data()[ij] * s.dN.data()[ij];
   }
   return q;
 }
 
 bool Calculation::adopt_state(Calculation&& o) {
+  if (noncol_ || o.noncol_) return false;  // spinor layout: start from scratch
   if (o.nspin_ != nspin_ || o.nbands_ != nbands_ || o.basis_.size() != basis_.size() || o.c_.natoms() != c_.natoms() ||
       !o.have_density_ || o.psi_.size() != psi_.size())
     return false;
@@ -1332,7 +1514,7 @@ bool Calculation::adopt_state(Calculation&& o) {
 }
 
 bool Calculation::adopt_density(const Calculation& o) {
-  if (o.nspin_ != nspin_ || o.gs_.ng != gs_.ng || o.gs_.m != gs_.m || o.c_.natoms() != c_.natoms() || !o.have_density_) return false;
+  if (o.ncomp_ != ncomp_ || o.gs_.ng != gs_.ng || o.gs_.m != gs_.m || o.c_.natoms() != c_.natoms() || !o.have_density_) return false;
   for (int a = 0; a < c_.natoms(); ++a)
     if (o.c_.setup(a).ni != c_.setup(a).ni) return false;
   rho_ = o.rho_;
@@ -1363,7 +1545,7 @@ struct FileCloser {
 }  // namespace
 
 void Calculation::save_checkpoint(const std::string& path) const {
-  const bool with_wfc = p_.checkpoint_wfc && !first_solve_;
+  const bool with_wfc = p_.checkpoint_wfc && !first_solve_ && !noncol_;  // spinor wavefunctions are not stored
   if (!par::root()) {  // the root process writes the file; the others hand over their wavefunctions
     if (with_wfc)
       for (size_t ik = 0; ik < basis_.size(); ++ik)
@@ -1380,7 +1562,7 @@ void Calculation::save_checkpoint(const std::string& path) const {
     LSDA_CHECK(fc.f != nullptr, "cannot write checkpoint '" + tmp + "'");
     ChkHeader h{};
     std::memcpy(h.magic, chk_magic, 8);
-    h.nspin = nspin_;
+    h.nspin = ncomp_;
     h.nat = c_.natoms();
     h.ng = gs_.ng;
     h.scf_converged = scf_converged_ ? 1 : 0;
@@ -1389,11 +1571,11 @@ void Calculation::save_checkpoint(const std::string& path) const {
       for (int j = 0; j < 3; ++j) h.lattice[3 * i + j] = c_.A[i][j];
     bool ok = std::fwrite(&h, sizeof h, 1, fc.f) == 1;
     for (const Atom& a : c_.atoms) ok = ok && std::fwrite(a.frac.data(), sizeof(double), 3, fc.f) == 3;
-    for (int s = 0; s < nspin_; ++s) ok = ok && std::fwrite(rho_[s].data(), sizeof(cplx), gs_.ng, fc.f) == static_cast<size_t>(gs_.ng);
+    for (int s = 0; s < ncomp_; ++s) ok = ok && std::fwrite(rho_[s].data(), sizeof(cplx), gs_.ng, fc.f) == static_cast<size_t>(gs_.ng);
     for (int a = 0; a < c_.natoms(); ++a) {
       const int ni = c_.setup(a).ni;
       ok = ok && std::fwrite(&ni, sizeof ni, 1, fc.f) == 1;
-      for (int s = 0; s < nspin_; ++s) ok = ok && std::fwrite(D_[a][s].data(), sizeof(double), D_[a][s].size(), fc.f) == D_[a][s].size();
+      for (int s = 0; s < ncomp_; ++s) ok = ok && std::fwrite(D_[a][s].data(), sizeof(double), D_[a][s].size(), fc.f) == D_[a][s].size();
     }
     // wavefunctions (optional): per k-point the integer G vectors, per spin eigenvalues and coefficients
     const int has_wfc = with_wfc ? 1 : 0, nk = static_cast<int>(basis_.size());
@@ -1446,7 +1628,7 @@ bool Calculation::load_checkpoint(const std::string& path) {
   if (!fc.f) return false;
   ChkHeader h{};
   if (std::fread(&h, sizeof h, 1, fc.f) != 1 || std::memcmp(h.magic, chk_magic, 8) != 0) return false;
-  if (h.nspin != nspin_ || h.nat != c_.natoms() || h.ng != gs_.ng || std::abs(h.ecut_dense - p_.ecut_dense) > 1e-9) return false;
+  if (h.nspin != ncomp_ || h.nat != c_.natoms() || h.ng != gs_.ng || std::abs(h.ecut_dense - p_.ecut_dense) > 1e-9) return false;
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
       if (std::abs(h.lattice[3 * i + j] - c_.A[i][j]) > 1e-9) return false;
@@ -1456,14 +1638,14 @@ bool Calculation::load_checkpoint(const std::string& path) {
     for (int d = 0; d < 3; ++d)
       if (std::abs(v[d] - a.frac[d]) > 1e-9) return false;
   }
-  RhoG rho(nspin_, std::vector<cplx>(gs_.ng));
-  DMat D(c_.natoms(), std::vector<RMatrix>(nspin_));
-  for (int s = 0; s < nspin_; ++s)
+  RhoG rho(ncomp_, std::vector<cplx>(gs_.ng));
+  DMat D(c_.natoms(), std::vector<RMatrix>(ncomp_));
+  for (int s = 0; s < ncomp_; ++s)
     if (std::fread(rho[s].data(), sizeof(cplx), gs_.ng, fc.f) != static_cast<size_t>(gs_.ng)) return false;
   for (int a = 0; a < c_.natoms(); ++a) {
     int ni = 0;
     if (std::fread(&ni, sizeof ni, 1, fc.f) != 1 || ni != c_.setup(a).ni) return false;
-    for (int s = 0; s < nspin_; ++s) {
+    for (int s = 0; s < ncomp_; ++s) {
       D[a][s].resize(ni, ni);
       if (std::fread(D[a][s].data(), sizeof(double), D[a][s].size(), fc.f) != D[a][s].size()) return false;
     }

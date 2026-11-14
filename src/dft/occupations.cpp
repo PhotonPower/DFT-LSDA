@@ -184,9 +184,9 @@ std::vector<std::array<int, 4>> make_tetrahedra(const TetraGrid& g) {
 }
 
 Occupations tetrahedron_occupations(const std::vector<std::vector<double>>& eig, const std::vector<double>& kweight, int nspin,
-                                    double nelec, const TetraGrid& grid) {
+                                    double nelec, const TetraGrid& grid, double degeneracy) {
   const auto tets = make_tetrahedra(grid);
-  const double vt = 1.0 / static_cast<double>(tets.size()), deg = nspin == 1 ? 2.0 : 1.0;
+  const double vt = 1.0 / static_cast<double>(tets.size()), deg = degeneracy > 0.0 ? degeneracy : (nspin == 1 ? 2.0 : 1.0);
   const int nk = static_cast<int>(kweight.size()), nb = static_cast<int>(eig[0].size());
   auto accumulate = [&](double ef, bool bloechl, std::vector<std::vector<double>>* wout) {
     double total = 0.0;
@@ -241,14 +241,14 @@ Occupations tetrahedron_occupations(const std::vector<std::vector<double>>& eig,
 
 Occupations compute_occupations(const std::vector<std::vector<double>>& eig, const std::vector<double>& kweight,
                                 int nspin, double nelec, Smearing type, double width,
-                                std::optional<double> fixed_moment, const TetraGrid* tetra) {
+                                std::optional<double> fixed_moment, const TetraGrid* tetra, double degeneracy) {
   if (type == Smearing::Tetrahedron) {
     LSDA_CHECK(tetra != nullptr, "tetrahedron method: k-point grid information missing");
     LSDA_CHECK(!fixed_moment, "tetrahedron method: fixed_moment is not supported");
-    return tetrahedron_occupations(eig, kweight, nspin, nelec, *tetra);
+    return tetrahedron_occupations(eig, kweight, nspin, nelec, *tetra, degeneracy);
   }
   Occupations occ;
-  const double deg = nspin == 1 ? 2.0 : 1.0;
+  const double deg = degeneracy > 0.0 ? degeneracy : (nspin == 1 ? 2.0 : 1.0);
   if (nspin == 2 && fixed_moment) {
     occ.efermi[0] = find_mu(eig, kweight, 2, 0, 1, 1.0, type, width, 0.5 * (nelec + *fixed_moment));
     occ.efermi[1] = find_mu(eig, kweight, 2, 1, 2, 1.0, type, width, 0.5 * (nelec - *fixed_moment));

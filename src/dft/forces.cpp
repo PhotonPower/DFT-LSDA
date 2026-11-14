@@ -22,7 +22,7 @@ std::vector<Vec3> Calculation::forces() {
   for (int a = 0; a < nat; ++a) {
     const PawSetup& s = c_.setup(a);
     RMatrix dt = D_[a][0];
-    if (nspin_ == 2)
+    if (ncomp_ == 2)
       for (size_t i = 0; i < dt.size(); ++i) dt.data()[i] += D_[a][1].data()[i];
     Q[a].resize(s.nL);
     s.multipoles(dt, Q[a].data());
@@ -44,8 +44,8 @@ std::vector<Vec3> Calculation::forces() {
           t[is * nL + L] = ((l / 2) % 2 == 0 ? 1.0 : -1.0) * ylm[L] * ff_g_[is][static_cast<size_t>(l) * ng + ig];
         }
       }
-      const cplx vavg = nspin_ == 2 ? 0.5 * (veff_G_[0][ig] + veff_G_[1][ig]) : veff_G_[0][ig];
-      const cplx ntot = rho_[0][ig] + (nspin_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
+      const cplx vavg = ncomp_ == 2 ? 0.5 * (veff_G_[0][ig] + veff_G_[1][ig]) : veff_G_[0][ig];
+      const cplx ntot = rho_[0][ig] + (ncomp_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
       const cplx cv = std::conj(vavg), cn = std::conj(ntot), ch = std::conj(vH_G_[ig]);
       for (int a = 0; a < nat; ++a) {
         const int is = c_.atoms[a].species;
@@ -68,6 +68,8 @@ std::vector<Vec3> Calculation::forces() {
   }
 
   // ---- projector terms ---------------------------------------------------------------------
+  //   F_a = -2 Re sum_n f_n P_n^H (dH - eps_n dS) dP_n/dR_a , evaluated with the on-site blocks of the
+  //   Hamiltonian (valid for one spin channel as well as for spinors)
   std::vector<double> fnl(3 * static_cast<size_t>(nat), 0.0);
   const int nk = static_cast<int>(kpts_.size());
   for (int ik = 0; ik < nk; ++ik) {
@@ -76,28 +78,28 @@ std::vector<Vec3> Calculation::forces() {
     const Projectors proj = make_projectors(c_, b);
     for (int s = 0; s < nspin_; ++s) {
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
+      const Hamiltonian h = hamiltonian(ik, s, proj);
       const CMatrix& x = psi_[ks];
       const CMatrix& P = proj_psi_[ks];
-      CMatrix xd(b.npw, nbands_);
+      const int dim = h.npw(), nblocks = noncol_ ? 2 : 1;
+      CMatrix xd(dim, nbands_), DP, SP;
       for (int d = 0; d < 3; ++d) {
 #pragma omp parallel for schedule(static)
         for (int n = 0; n < nbands_; ++n)
-          for (int ig = 0; ig < b.npw; ++ig) xd(ig, n) = cplx(0.0, b.kg[3 * ig + d]) * x(ig, n);
-        const CMatrix dP = overlap(proj.beta.data(), proj.nproj, xd.data(), nbands_, b.npw);
+          for (int ig = 0; ig < dim; ++ig) xd(ig, n) = cplx(0.0, b.kg[3 * (ig % b.npw) + d]) * x(ig, n);
+        const CMatrix dP = h.project(xd.data(), nbands_);
+        h.block_multiply(dP, &DP, &SP);
         for (int a = 0; a < nat; ++a) {
-          const PawSetup& su = c_.setup(a);
-          const int ni = su.ni, off = proj.offset[a];
-          const RMatrix& dh = dH_[a][s];
+          const int ni = c_.setup(a).ni;
           double sum = 0.0;
           for (int n = 0; n < nbands_; ++n) {
             const double w = occ_.f[ks][n] * b.weight;
             if (std::abs(w) < 1e-16) continue;
             const double e = eig_[ks][n];
             cplx acc = 0.0;
-            for (int j = 0; j < ni; ++j) {
-              cplx row = 0.0;
-              for (int i = 0; i < ni; ++i) row += (dh(i, j) - e * su.dS(i, j)) * std::conj(P(off + i, n));
-              acc += row * dP(off + j, n);
+            for (int blk = 0; blk < nblocks; ++blk) {
+              const int off = blk * proj.nproj + proj.offset[a];
+              for (int i = 0; i < ni; ++i) acc += std::conj(P(off + i, n)) * (DP(off + i, n) - e * SP(off + i, n));
             }
             sum += w * acc.real();
           }
@@ -106,7 +108,6 @@ std::vector<Vec3> Calculation::forces() {
       }
     }
   }
-
   par::sum(fnl.data(), fnl.size());
 
   // ---- total, symmetrized --------------------------------------------------------------------
@@ -148,6 +149,7 @@ std::vector<Vec3> Calculation::forces() {
 Mat3 Calculation::stress() {
   ScopedTimer timer("stress");
   LSDA_CHECK(have_occ_, "stress: run scf() first");
+  LSDA_CHECK(!noncol_, "the stress tensor is not implemented for non-collinear calculations");
   const int nat = c_.natoms(), ng = gs_.ng, nL = (lmax_comp_ + 1) * (lmax_comp_ + 1);
   const int ca[6] = {0, 1, 2, 1, 0, 0}, cb[6] = {0, 1, 2, 2, 2, 1};  // xx yy zz yz xz xy
   double sig[6] = {0, 0, 0, 0, 0, 0};                                 // dF/d eps (energy units)
@@ -227,7 +229,7 @@ Mat3 Calculation::stress() {
   for (int a = 0; a < nat; ++a) {
     const PawSetup& s = c_.setup(a);
     RMatrix dt = D_[a][0];
-    if (nspin_ == 2)
+    if (ncomp_ == 2)
       for (size_t i = 0; i < dt.size(); ++i) dt.data()[i] += D_[a][1].data()[i];
     Q[a].resize(s.nL);
     s.multipoles(dt, Q[a].data());
@@ -255,8 +257,8 @@ Mat3 Calculation::stress() {
                                                 0.5 * gl * (g[cb[c]] * grad[3 * L + ca[c]] + g[ca[c]] * grad[3 * L + cb[c]]));
         }
       }
-      const cplx vavg = nspin_ == 2 ? 0.5 * (veff_G_[0][ig] + veff_G_[1][ig]) : veff_G_[0][ig];
-      const cplx ntot = rho_[0][ig] + (nspin_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
+      const cplx vavg = ncomp_ == 2 ? 0.5 * (veff_G_[0][ig] + veff_G_[1][ig]) : veff_G_[0][ig];
+      const cplx ntot = rho_[0][ig] + (ncomp_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
       const cplx cv = std::conj(vavg), cn = std::conj(ntot), ch = std::conj(vH_G_[ig]);
       // Hartree term from 1/G^2
       const double h2 = c_.volume * std::norm(vH_G_[ig]) / (4 * pi);

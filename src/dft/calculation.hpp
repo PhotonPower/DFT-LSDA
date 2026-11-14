@@ -14,6 +14,9 @@
 
 namespace lsda {
 
+class Hamiltonian;
+struct Projectors;
+
 struct Params {
   // basis
   double ecut = 0.0;          // plane-wave cutoff for wavefunctions (Ha); 0: largest recommendation of the datasets
@@ -26,6 +29,7 @@ struct Params {
   bool symmetry = true;
   // electrons
   int nspin = 1;
+  bool noncollinear = false;  // two-component spinors, magnetization as a vector field (LSDA only, no symmetry)
   int nbands = 0;  // 0: automatic
   std::string smearing = "cold";  // fermi | gauss | mp1 | cold | tetrahedron
   double width = 0.005;  // Ha
@@ -95,7 +99,10 @@ class Calculation {
   const Params& params() const { return p_; }
   void set_verbosity(int v) { p_.verbosity = v; }  // 0: no SCF tables (used inside long loops such as MD)
   double fermi_level(int s = 0) const { return occ_.efermi[s]; }
-  double total_magnetization() const { return occ_.n_spin[0] - occ_.n_spin[1]; }
+  double total_magnetization() const;          // collinear: N_up - N_down; non-collinear: |M|
+  Vec3 magnetization_vector() const;           // non-collinear: total moment (mu_B); collinear: (0, 0, M)
+  std::vector<Vec3> local_moment_vectors() const;
+  bool noncollinear() const { return noncol_; }
   // Pseudo electron density (valence + pseudo core; without the augmentation inside the PAW spheres) on the
   // fine grid in Gaussian cube format; magnetization = true writes n_up - n_down instead of the total.
   void write_cube(const std::string& path, bool magnetization) const;
@@ -134,6 +141,7 @@ class Calculation {
   void add_compensation(const std::vector<std::vector<double>>& Q, std::vector<cplx>& out) const;
   void project_on_shape(const std::vector<cplx>& v, std::vector<std::vector<double>>& W) const;
   void solve_bands(double tol, int max_iter, double& max_residual, int& not_converged);
+  Hamiltonian hamiltonian(int ik, int s, const Projectors& proj) const;
   void compute_density(RhoG& rho, DMat& D) const;
   void symmetrize_density(RhoG& rho) const;
   void symmetrize_D(DMat& D) const;
@@ -154,7 +162,9 @@ class Calculation {
   FFT3D fft_c_, fft_f_;
   GSphere gs_;
   std::vector<PWBasis> basis_;
-  int nspin_ = 1, nbands_ = 0, lmax_comp_ = 0;
+  int nspin_ = 1, nbands_ = 0, lmax_comp_ = 0;  // nspin_: separate spin channels of the wavefunctions
+  int ncomp_ = 1;        // components of density, potential and density matrices: 1, 2 (up/down) or 4 (n, m_x, m_y, m_z)
+  bool noncol_ = false;
   double nelec_ = 0;
 
   // species form factors on the dense sphere

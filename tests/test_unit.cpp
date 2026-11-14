@@ -1,4 +1,6 @@
 // Unit tests for the numerical building blocks. Usage: test_unit <pseudo-dir>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -409,6 +411,36 @@ static void test_paw(const std::string& dir, bool gga) {
     for (int ij = 0; ij < s.ni * s.ni; ++ij) Dh[0].data()[ij] = Dh[1].data()[ij] = 0.5 * D.data()[ij];
     const double e1 = s.onsite(1, &Dt, dH1, xc), e2 = s.onsite(2, Dh, dH2, xc);
     check(std::abs(e1 - e2) < 1e-9, std::string(el) + ": nspin = 1 and 2 agree", std::abs(e1 - e2));
+    if (!gga) {  // non-collinear on-site term: collinear limit, rotation invariance, derivative
+      RMatrix D4[4] = {D, D, D, D}, dH4[4], Drot[4] = {D, D, D, D};
+      for (int ij = 0; ij < s.ni * s.ni; ++ij) {
+        const double t = Ds[0].data()[ij] + Ds[1].data()[ij], m = Ds[0].data()[ij] - Ds[1].data()[ij];
+        D4[0].data()[ij] = Drot[0].data()[ij] = t;
+        D4[1].data()[ij] = D4[2].data()[ij] = 0.0;
+        D4[3].data()[ij] = m;                        // magnetization along z
+        Drot[1].data()[ij] = 0.6 * m;                // the same, rotated to (0.6, 0, 0.8)
+        Drot[2].data()[ij] = 0.0;
+        Drot[3].data()[ij] = 0.8 * m;
+      }
+      const double ecol = s.onsite(2, Ds, dH, xc), e4 = s.onsite(4, D4, dH4, xc), erot = s.onsite(4, Drot, nullptr, xc);
+      double dev = 0.0;
+      for (int ij = 0; ij < s.ni * s.ni; ++ij)
+        dev = std::max({dev, std::abs(dH4[0].data()[ij] - 0.5 * (dH[0].data()[ij] + dH[1].data()[ij])),
+                        std::abs(dH4[3].data()[ij] - 0.5 * (dH[0].data()[ij] - dH[1].data()[ij]))});
+      check(std::abs(e4 - ecol) < 1e-9 && dev < 1e-9, std::string(el) + ": non-collinear on-site term, collinear limit", std::max(std::abs(e4 - ecol), dev));
+      check(std::abs(erot - ecol) < 1e-9, std::string(el) + ": non-collinear on-site energy is rotation invariant", std::abs(erot - ecol));
+      s.onsite(4, Drot, dH4, xc);
+      double derr = 0.0;
+      for (int cmp = 0; cmp < 4; ++cmp) {
+        const double h = 1e-5;
+        RMatrix Dp[4] = {Drot[0], Drot[1], Drot[2], Drot[3]}, Dm[4] = {Drot[0], Drot[1], Drot[2], Drot[3]};
+        Dp[cmp](s.ni - 1, s.ni - 1) += h;
+        Dm[cmp](s.ni - 1, s.ni - 1) -= h;
+        const double fd = (s.onsite(4, Dp, nullptr, xc) - s.onsite(4, Dm, nullptr, xc)) / (2 * h);
+        derr = std::max(derr, std::abs(fd - dH4[cmp](s.ni - 1, s.ni - 1)) / std::max(1.0, std::abs(fd)));
+      }
+      check(derr < 2e-6, std::string(el) + ": non-collinear dH_c = dE/dD_c (finite differences)", derr);
+    }
     std::printf("         %s: Z=%g core=%g valence=%g ni=%d r_paw=%.3f  on-site energy(ref) = %.6f Ha\n", el, s.Z, s.n_core,
                 s.n_valence, s.ni, s.r_paw, e1);
   }
@@ -530,6 +562,94 @@ static void test_neb() {
   check(std::abs(E[0] + 1.46700) < 1e-5 && std::abs(E[ntot - 1] + 0.80768) < 1e-5, "NEB: end-point energies", std::abs(E[0] + 1.46700));
 }
 
+// Spinor Hamiltonian: Hermiticity, iterative solver against dense diagonalization, and the collinear limit
+// (magnetic field along z or x: spectrum = union of the spectra of the two collinear spin channels)
+static void test_spinor_hamiltonian(const std::string& dir) {
+  std::printf("spinor Hamiltonian\n");
+  Crystal c;
+  const double a = 6.2;
+  c.set_lattice({{{a, 0, 0}, {0.2, a, 0}, {0, -0.1, a}}});
+  c.species.resize(1);
+  c.species[0].setup = PawSetup::load(dir + "/Fe.LDA_PW-JTH.xml");
+  c.atoms = {{0, {0.03, -0.02, 0.01}, 0}};
+  const double ecut = 3.0;
+  c.species[0].setup.build_tables(std::sqrt(2 * ecut) + 1.0, 2 * std::sqrt(2 * ecut) + 1.0);
+  int nc[3];
+  fft_dimensions(c, 2 * std::sqrt(2 * ecut), nc);
+  FFT3D fft(nc[0], nc[1], nc[2]);
+  const PWBasis pw = make_pw_basis(c, KPoint{{0.2, -0.1, 0.3}, 1.0}, ecut, fft);
+  const int n = pw.npw, ni = c.setup(0).ni;
+  const size_t ng = fft.size();
+  std::vector<double> v0(ng), b(ng), zero(ng, 0.0), bx(ng), by(ng), bz(ng), vup(ng), vdn(ng);
+  for (int i = 0; i < nc[0]; ++i)
+    for (int j = 0; j < nc[1]; ++j)
+      for (int k = 0; k < nc[2]; ++k) {
+        const size_t g = (static_cast<size_t>(i) * nc[1] + j) * nc[2] + k;
+        v0[g] = -0.4 * std::cos(2 * pi * i / nc[0]) + 0.2 * std::sin(2 * pi * (j + k) / nc[1]);
+        b[g] = 0.15 + 0.1 * std::cos(2 * pi * k / nc[2]);
+        bx[g] = 0.6 * b[g] * std::cos(2 * pi * j / nc[1]);   // a genuinely non-collinear field
+        by[g] = 0.5 * b[g] * std::sin(2 * pi * i / nc[0]);
+        bz[g] = b[g];
+        vup[g] = v0[g] + b[g];
+        vdn[g] = v0[g] - b[g];
+      }
+  unsigned seed = 11;
+  auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return ((seed >> 8) & 0xffff) / 65536.0 - 0.5; };
+  RMatrix h0(ni, ni), hm(ni, ni), hx(ni, ni), hy(ni, ni), hup(ni, ni), hdn(ni, ni), nul(ni, ni);
+  for (int i = 0; i < ni; ++i)
+    for (int j = 0; j <= i; ++j) {
+      h0(i, j) = h0(j, i) = 0.3 * rnd() + (i == j ? 0.2 : 0.0);
+      hm(i, j) = hm(j, i) = 0.1 * rnd();
+      hx(i, j) = hx(j, i) = 0.05 * rnd();
+      hy(i, j) = hy(j, i) = 0.05 * rnd();
+      hup(i, j) = hup(j, i) = h0(i, j) + hm(i, j);
+      hdn(i, j) = hdn(j, i) = h0(i, j) - hm(i, j);
+    }
+  const RMatrix& dS = c.setup(0).dS;
+  const Projectors proj = make_projectors(c, pw);
+  auto dense = [&](const Hamiltonian& h, std::vector<double>& w) {
+    const int d = h.npw();
+    CMatrix I(d, d), Hd(d, d), Sd(d, d);
+    for (int i = 0; i < d; ++i) I(i, i) = 1.0;
+    h.apply(I.data(), d, Hd.data(), Sd.data());
+    double herm = 0.0;
+    for (int i = 0; i < d; ++i)
+      for (int j = 0; j < d; ++j) herm = std::max({herm, std::abs(Hd(i, j) - std::conj(Hd(j, i))), std::abs(Sd(i, j) - std::conj(Sd(j, i)))});
+    eigh_gen(Hd, Sd, w);
+    return herm;
+  };
+  std::vector<double> wup, wdn, wz, wx, wnc;
+  dense(Hamiltonian(pw, fft, vup.data(), proj, {&hup}, {&dS}), wup);
+  dense(Hamiltonian(pw, fft, vdn.data(), proj, {&hdn}, {&dS}), wdn);
+  std::vector<double> both = wup;
+  both.insert(both.end(), wdn.begin(), wdn.end());
+  std::sort(both.begin(), both.end());
+  using A4 = std::array<const double*, 4>;
+  using H4 = std::array<const RMatrix*, 4>;
+  double herm = dense(Hamiltonian(pw, fft, A4{v0.data(), zero.data(), zero.data(), b.data()}, proj, {H4{&h0, &nul, &nul, &hm}}, {&dS}), wz);
+  dense(Hamiltonian(pw, fft, A4{v0.data(), b.data(), zero.data(), zero.data()}, proj, {H4{&h0, &hm, &nul, &nul}}, {&dS}), wx);
+  double ez = 0.0, ex = 0.0;
+  for (int i = 0; i < 2 * n; ++i) {
+    ez = std::max(ez, std::abs(wz[i] - both[i]));
+    ex = std::max(ex, std::abs(wx[i] - both[i]));
+  }
+  check(herm < 1e-11, "spinor H and S are Hermitian", herm);
+  check(ez < 1e-10, "field along z: spectrum = collinear up and down spectra", ez);
+  check(ex < 1e-10, "field along x: same spectrum (spin-rotation invariance)", ex);
+  const Hamiltonian hnc(pw, fft, A4{v0.data(), bx.data(), by.data(), bz.data()}, proj, {H4{&h0, &hx, &hy, &hm}}, {&dS});
+  herm = dense(hnc, wnc);
+  check(herm < 1e-11, "non-collinear H is Hermitian", herm);
+  const int nb = 12;
+  CMatrix X(2 * n, nb);
+  for (int j = 0; j < nb; ++j)
+    for (int i = 0; i < 2 * n; ++i) X(i, j) = cplx(rnd(), rnd()) / (1.0 + hnc.kinetic(i));
+  std::vector<double> eps;
+  const EigensolverResult r = ppcg(hnc, X, eps, std::vector<double>(nb, 1e-9), nb - 3, 400);
+  double err = 0.0;
+  for (int j = 0; j < nb - 3; ++j) err = std::max(err, std::abs(eps[j] - wnc[j]));
+  check(err < 1e-9, strf("PPCG on spinors equals dense diagonalization (%d iterations)", r.iterations), err);
+}
+
 // Iterative eigensolvers against dense diagonalization of the full PAW Hamiltonian matrix
 static void test_eigensolvers(const std::string& dir) {
   std::printf("eigensolvers\n");
@@ -611,6 +731,7 @@ int main(int argc, char** argv) {
     test_occupations_mixer();
     test_neb();
     test_eigensolvers(dir);
+    test_spinor_hamiltonian(dir);
     test_paw(dir, false);
     test_paw(dir, true);
   } catch (const std::exception& e) {

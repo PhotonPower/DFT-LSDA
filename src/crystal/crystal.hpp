@@ -17,6 +17,7 @@ struct Atom {
   int species = 0;
   Vec3 frac{};        // fractional coordinates
   double magmom = 0;  // initial magnetic moment (mu_B)
+  Vec3 mvec{};        // initial moment vector for non-collinear calculations (mu_B)
 };
 
 struct Crystal {
@@ -65,6 +66,6 @@ struct KPoint {
 // If grid_map is given it receives, for every point (i0 * n1 + i1) * n2 + i2 of the full grid, the index of
 // its irreducible k-point.
 std::vector<KPoint> make_kpoints(const int n[3], const Vec3& shift, std::vector<SymOp>& ops,
-                                 std::vector<int>* grid_map = nullptr);
+                                 std::vector<int>* grid_map = nullptr, bool time_reversal = true);
 
 }  // namespace lsda

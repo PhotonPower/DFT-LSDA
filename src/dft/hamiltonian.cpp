@@ -94,24 +94,43 @@ CMatrix make_projector_strain_derivative(const Crystal& c, const PWBasis& pw, in
 }
 
 void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
-  const int npw = pw_.npw;
+  const int npw = pw_.npw, dim = this->npw();
   const size_t ngrid = fft_.size();
   const double inv_n = 1.0 / static_cast<double>(ngrid);
   n_applications += nb;
   const double t0 = wall_time();
 #pragma omp parallel
   {
-    CVec work(ngrid);
+    CVec work(ngrid), work2(spinor_ ? ngrid : 0);
 #pragma omp for schedule(dynamic, 1)
     for (int ib = 0; ib < nb; ++ib) {
-      const cplx* xb = x + static_cast<size_t>(ib) * npw;
-      cplx* hb = kx + static_cast<size_t>(ib) * npw;
+      const cplx* xb = x + static_cast<size_t>(ib) * dim;
+      cplx* hb = kx + static_cast<size_t>(ib) * dim;
       std::fill(work.begin(), work.end(), cplx(0.0));
       for (int ig = 0; ig < npw; ++ig) work[pw_.idx[ig]] = xb[ig];
       fft_.backward_pruned(work.data(), pw_.columns, pw_.planes);
-      for (size_t i = 0; i < ngrid; ++i) work[i] *= vloc_[i];
+      if (!spinor_) {
+        for (size_t i = 0; i < ngrid; ++i) work[i] *= vloc_[0][i];
+        fft_.forward_pruned(work.data(), pw_.columns, pw_.planes);
+        for (int ig = 0; ig < npw; ++ig) hb[ig] = pw_.kin[ig] * xb[ig] + inv_n * work[pw_.idx[ig]];
+        continue;
+      }
+      // spinor: (V psi)_up = (v + Bz) psi_up + (Bx - i By) psi_dn,  (V psi)_dn = (Bx + i By) psi_up + (v - Bz) psi_dn
+      std::fill(work2.begin(), work2.end(), cplx(0.0));
+      for (int ig = 0; ig < npw; ++ig) work2[pw_.idx[ig]] = xb[npw + ig];
+      fft_.backward_pruned(work2.data(), pw_.columns, pw_.planes);
+      const double *v0 = vloc_[0], *bx = vloc_[1], *by = vloc_[2], *bz = vloc_[3];
+      for (size_t i = 0; i < ngrid; ++i) {
+        const cplx u = work[i], d = work2[i];
+        work[i] = (v0[i] + bz[i]) * u + cplx(bx[i], -by[i]) * d;
+        work2[i] = cplx(bx[i], by[i]) * u + (v0[i] - bz[i]) * d;
+      }
       fft_.forward_pruned(work.data(), pw_.columns, pw_.planes);
-      for (int ig = 0; ig < npw; ++ig) hb[ig] = pw_.kin[ig] * xb[ig] + inv_n * work[pw_.idx[ig]];
+      fft_.forward_pruned(work2.data(), pw_.columns, pw_.planes);
+      for (int ig = 0; ig < npw; ++ig) {
+        hb[ig] = pw_.kin[ig] * xb[ig] + inv_n * work[pw_.idx[ig]];
+        hb[npw + ig] = pw_.kin[ig] * xb[npw + ig] + inv_n * work2[pw_.idx[ig]];
+      }
     }
   }
   add_time("  H: local part (FFT)", wall_time() - t0);
@@ -119,45 +138,81 @@ void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
 
 CMatrix Hamiltonian::project(const cplx* x, int nb) const {
   const double t0 = wall_time();
-  CMatrix P = overlap(proj_.beta.data(), proj_.nproj, x, nb, pw_.npw);
+  const int npw = pw_.npw, np = proj_.nproj, dim = this->npw();
+  CMatrix P(nproj(), nb);
+  if (np > 0) {
+    // the projectors act on each spin component separately
+    gemm('C', 'N', np, nb, npw, 1.0, proj_.beta.data(), npw, x, dim, 0.0, P.data(), nproj());
+    if (spinor_) gemm('C', 'N', np, nb, npw, 1.0, proj_.beta.data(), npw, x + npw, dim, 0.0, P.data() + np, nproj());
+  }
   add_time("  H: projections", wall_time() - t0);
   return P;
 }
 
+void Hamiltonian::add_nonlocal(const CMatrix& T, cplx* r, int nb) const {
+  const int npw = pw_.npw, np = proj_.nproj, dim = this->npw();
+  if (np == 0) return;
+  gemm('N', 'N', npw, nb, np, 1.0, proj_.beta.data(), npw, T.data(), nproj(), 1.0, r, dim);
+  if (spinor_) gemm('N', 'N', npw, nb, np, 1.0, proj_.beta.data(), npw, T.data() + np, nproj(), 1.0, r + npw, dim);
+}
+
 void Hamiltonian::block_multiply(const CMatrix& P, CMatrix* DP, CMatrix* SP) const {
-  const int nb = P.cols(), nat = static_cast<int>(dH_.size());
-  if (DP) DP->resize(proj_.nproj, nb);
-  if (SP) SP->resize(proj_.nproj, nb);
+  const int nb = P.cols(), nat = static_cast<int>(dH_.size()), np = proj_.nproj;
+  if (DP) DP->resize(nproj(), nb);
+  if (SP) SP->resize(nproj(), nb);
 #pragma omp parallel for schedule(static)
   for (int ib = 0; ib < nb; ++ib)
     for (int a = 0; a < nat; ++a) {
-      const RMatrix& dh = *dH_[a];
       const RMatrix& ds = *dS_[a];
-      const int ni = dh.rows(), off = proj_.offset[a];
+      const int ni = ds.rows(), off = proj_.offset[a];
       const cplx* p = P.col(ib) + off;
-      for (int i = 0; i < ni; ++i) {
-        cplx sh = 0.0, ss = 0.0;
-        for (int j = 0; j < ni; ++j) {
-          sh += dh(i, j) * p[j];
-          ss += ds(i, j) * p[j];
+      if (!spinor_) {
+        const RMatrix& dh = *dH_[a][0];
+        for (int i = 0; i < ni; ++i) {
+          cplx sh = 0.0, ss = 0.0;
+          for (int j = 0; j < ni; ++j) {
+            sh += dh(i, j) * p[j];
+            ss += ds(i, j) * p[j];
+          }
+          if (DP) (*DP)(off + i, ib) = sh;
+          if (SP) (*SP)(off + i, ib) = ss;
         }
-        if (DP) (*DP)(off + i, ib) = sh;
-        if (SP) (*SP)(off + i, ib) = ss;
+        continue;
+      }
+      const cplx* q = p + np;  // spin-down projections
+      const RMatrix &h0 = *dH_[a][0], &hx = *dH_[a][1], &hy = *dH_[a][2], &hz = *dH_[a][3];
+      for (int i = 0; i < ni; ++i) {
+        cplx su = 0.0, sd = 0.0, ou = 0.0, od = 0.0;
+        for (int j = 0; j < ni; ++j) {
+          const cplx hud(hx(i, j), -hy(i, j)), hdu(hx(i, j), hy(i, j));
+          su += (h0(i, j) + hz(i, j)) * p[j] + hud * q[j];
+          sd += hdu * p[j] + (h0(i, j) - hz(i, j)) * q[j];
+          ou += ds(i, j) * p[j];
+          od += ds(i, j) * q[j];
+        }
+        if (DP) {
+          (*DP)(off + i, ib) = su;
+          (*DP)(np + off + i, ib) = sd;
+        }
+        if (SP) {
+          (*SP)(off + i, ib) = ou;
+          (*SP)(np + off + i, ib) = od;
+        }
       }
     }
 }
 
 void Hamiltonian::apply(const cplx* x, int nb, cplx* hx, cplx* sx) const {
-  const int npw = pw_.npw, nproj = proj_.nproj;
+  const int dim = this->npw();
   apply_local(x, nb, hx);
-  std::copy(x, x + static_cast<size_t>(nb) * npw, sx);
-  if (nproj == 0) return;
+  std::copy(x, x + static_cast<size_t>(nb) * dim, sx);
+  if (proj_.nproj == 0) return;
   const CMatrix P = project(x, nb);
   CMatrix HP, SP;
   block_multiply(P, &HP, &SP);
   const double t0 = wall_time();
-  gemm('N', 'N', npw, nb, nproj, 1.0, proj_.beta.data(), npw, HP.data(), nproj, 1.0, hx, npw);
-  gemm('N', 'N', npw, nb, nproj, 1.0, proj_.beta.data(), npw, SP.data(), nproj, 1.0, sx, npw);
+  add_nonlocal(HP, hx, nb);
+  add_nonlocal(SP, sx, nb);
   add_time("  H: nonlocal update", wall_time() - t0);
 }
 

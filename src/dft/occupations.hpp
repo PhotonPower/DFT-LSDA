@@ -36,6 +36,7 @@ void tetrahedron_weights(const double e[4], double ef, double vt, bool bloechl, 
 // channels get separate Fermi levels such that N_up - N_dn = fixed_moment.
 Occupations compute_occupations(const std::vector<std::vector<double>>& eig, const std::vector<double>& kweight,
                                 int nspin, double nelec, Smearing type, double width,
-                                std::optional<double> fixed_moment, const TetraGrid* tetra = nullptr);
+                                std::optional<double> fixed_moment, const TetraGrid* tetra = nullptr,
+                                double degeneracy = 0.0);  // 0: 2 for nspin = 1, else 1 (spinor bands: 1)
 
 }  // namespace lsda

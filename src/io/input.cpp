@@ -125,6 +125,7 @@ Input read_input(const std::string& path) {
     for (int i = 0; i < 3; ++i) p.kshift[i] = to_double(t[i], "kshift");
   });
   take("symmetry", [&](const std::string& v) { p.symmetry = to_bool(v, "symmetry"); });
+  take("noncollinear", [&](const std::string& v) { p.noncollinear = to_bool(v, "noncollinear"); });
   take("nspin", [&](const std::string& v) { p.nspin = static_cast<int>(to_double(v, "nspin")); });
   take("nbands", [&](const std::string& v) { p.nbands = static_cast<int>(to_double(v, "nbands")); });
   take("smearing", [&](const std::string& v) { p.smearing = lower(v); });
@@ -240,7 +241,8 @@ Input read_input(const std::string& path) {
   LSDA_CHECK(blocks.count("atoms") && !blocks["atoms"].empty(), "input: block 'atoms' is missing");
   for (const std::string& l : blocks["atoms"]) {
     const auto t = split(l);
-    LSDA_CHECK(t.size() == 4 || t.size() == 5, "input: atom line must be '<label> x y z [moment]'");
+    LSDA_CHECK(t.size() == 4 || t.size() == 5 || (p.noncollinear && t.size() == 7),
+               "input: atom line must be '<label> x y z [moment]' (non-collinear: '<label> x y z mx my mz')");
     Atom at;
     at.species = -1;
     for (size_t is = 0; is < inp.crystal.species.size(); ++is)
@@ -254,6 +256,12 @@ Input read_input(const std::string& path) {
     }
     at.frac = v;
     if (t.size() == 5) at.magmom = to_double(t[4], "atoms");
+    if (t.size() == 7) {  // moment vector
+      for (int j = 0; j < 3; ++j) at.mvec[j] = to_double(t[4 + j], "atoms");
+      at.magmom = norm(at.mvec);
+    } else if (p.noncollinear) {
+      at.mvec = {0.0, 0.0, at.magmom};
+    }
     inp.crystal.atoms.push_back(at);
   }
   // k-path of a band-structure calculation:  <label> k1 k2 k3  (fractional reciprocal coordinates)
@@ -307,6 +315,11 @@ void write_results(const std::string& path, const Calculation& calc, bool conver
   std::fprintf(f, "  \"units\": {\"energy\": \"Hartree\", \"length\": \"bohr\", \"force\": \"Hartree/bohr\", \"stress\": \"Hartree/bohr^3\"},\n");
   std::fprintf(f, "  \"energy\": %.12f,\n  \"free_energy\": %.12f,\n  \"energy_sigma0\": %.12f,\n", e.total, e.free, e.sigma0);
   std::fprintf(f, "  \"fermi_level\": %.10f,\n  \"magnetization\": %.8f,\n", calc.fermi_level(), calc.total_magnetization());
+  const std::vector<Vec3> mvec = calc.local_moment_vectors();
+  if (calc.noncollinear()) {
+    const Vec3 mt = calc.magnetization_vector();
+    std::fprintf(f, "  \"magnetization_vector\": [%.8f, %.8f, %.8f],\n", mt[0], mt[1], mt[2]);
+  }
   std::fprintf(f, "  \"n_atoms\": %d,\n  \"n_electrons\": %.6f,\n  \"volume\": %.10f,\n", c.natoms(), c.n_electrons(), c.volume);
   std::fprintf(f, "  \"scf_iterations\": %d,\n  \"n_kpoints\": %d,\n  \"n_symmetry\": %d,\n", calc.n_scf_iterations(),
                calc.n_kpoints(), calc.n_symmetry_ops());
@@ -324,6 +337,7 @@ void write_results(const std::string& path, const Calculation& calc, bool conver
     const Atom& at = c.atoms[a];
     std::fprintf(f, "    {\"species\": \"%s\", \"frac\": [%.12f, %.12f, %.12f], \"moment\": %.6f", c.species[at.species].name.c_str(),
                  at.frac[0], at.frac[1], at.frac[2], mom[a]);
+    if (calc.noncollinear()) std::fprintf(f, ", \"moment_vector\": [%.6f, %.6f, %.6f]", mvec[a][0], mvec[a][1], mvec[a][2]);
     if (forces) std::fprintf(f, ", \"force\": [%.10f, %.10f, %.10f]", (*forces)[a][0], (*forces)[a][1], (*forces)[a][2]);
     std::fprintf(f, "}%s\n", a + 1 < c.natoms() ? "," : "");
   }

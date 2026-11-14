@@ -290,6 +290,19 @@ Zwei Al-Atome, 600 K Starttemperatur, 12 Schritte zu 3 fs (NVE): Die Erhaltungsg
 um höchstens 1.4e-5 Ha ohne erkennbare Drift, während 2.7 mHa zwischen kinetischer und potentieller Energie
 umverteilt werden. Thermostat und Neustart sind **nicht** getestet; längere Trajektorien wurden nicht gerechnet.
 
+## 7j. Nichtkollinearer Magnetismus
+
+* **Spinor-Hamiltonoperator** (Unit-Test): hermitesch; Feld entlang z oder x liefert exakt die Vereinigung der
+  beiden kollinearen Spektren (3e-15); PPCG auf Spinoren mit echt nichtkollinearem Feld gegen dichte
+  Diagonalisierung 4e-16.
+* **On-site-Term**: kollinearer Grenzfall und Rotationsinvarianz exakt (≤ 3e-13), Ableitungen gegen finite
+  Differenzen ≤ 4e-7 (Al, Fe, Ni; inklusive Hubbard-Term).
+* **SCF** (verzerrtes FeAl, 15 Ha, 2×2×2): nichtkollinear mit Moment entlang z bzw. entlang (0.6, 0, 0.8)
+  gegen kollinear: Energie −4e-12 / −5e-12 Ha, |M| 1.11401 gegen 1.11401 µB, Kräfte 1.5e-7 / 4e-7 Ha/Bohr; die
+  Richtung des Moments bleibt erhalten.
+* Eine echt nichtkollineare Konfiguration (verkantete Momente) wurde **nicht** gerechnet; geprüft ist dort nur
+  der Hamiltonoperator gegen die dichte Diagonalisierung.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

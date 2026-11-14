@@ -360,6 +360,8 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
   const int n2 = ni * ni;
   // ---- kinetic + Coulomb + zero-potential part (depends on the spin-summed D) ----
   std::vector<double> dt(n2), cd(n2, 0.0);
+  // nspin = 4: non-collinear, D[0] is the charge component and D[1..3] the magnetization components
+  LSDA_CHECK(nspin == 1 || nspin == 2 || nspin == 4, "onsite: nspin must be 1, 2 or 4");
   for (int ij = 0; ij < n2; ++ij) dt[ij] = D[0].data()[ij] + (nspin == 2 ? D[1].data()[ij] : 0.0);
   for (int kl = 0; kl < n2; ++kl) {
     const double d = dt[kl];
@@ -372,11 +374,33 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
   if (dH)
     for (int s = 0; s < nspin; ++s) {
       dH[s].resize(ni, ni);
-      for (int ij = 0; ij < n2; ++ij) dH[s].data()[ij] = B.data()[ij] + 2.0 * cd[ij];
+      for (int ij = 0; ij < n2; ++ij) dH[s].data()[ij] = (nspin == 4 && s > 0) ? 0.0 : B.data()[ij] + 2.0 * cd[ij];
     }
 
   // ---- Hubbard correction ------------------------------------------------------------
-  if (hubbard_l >= 0 && hubbard_u != 0.0) {
+  if (hubbard_l >= 0 && hubbard_u != 0.0 && nspin == 4) {
+    // non-collinear: occupation matrix n = (n0 + sum_c n_c sigma_c)/2 in spin space,
+    // E_U = U/2 Tr[n - n n] = U/2 [Tr n0 - (Tr n0^2 + sum_c Tr n_c^2)/2]
+    const int nm = 2 * hubbard_l + 1, l2 = hubbard_l * hubbard_l;
+    for (int c = 0; c < 4; ++c) {
+      const RMatrix n = occupation_matrix(D[c]);
+      double tr = 0.0, tr2 = 0.0;
+      for (int a = 0; a < nm; ++a) {
+        tr += n(a, a);
+        for (int b = 0; b < nm; ++b) tr2 += n(a, b) * n(b, a);
+      }
+      energy += 0.5 * hubbard_u * ((c == 0 ? tr : 0.0) - 0.5 * tr2);
+      if (dH)
+        for (int i = 0; i < ni; ++i) {
+          if (l_i[i] != hubbard_l) continue;
+          for (int j = 0; j < ni; ++j) {
+            if (l_i[j] != hubbard_l) continue;
+            const int a = L_i[i] - l2, b = L_i[j] - l2;
+            dH[c](i, j) += hubbard_u * ((c == 0 && a == b ? 0.5 : 0.0) - 0.5 * n(a, b)) * ae_norm_q_[pair(j_i[i], j_i[j])];
+          }
+        }
+    }
+  } else if (hubbard_l >= 0 && hubbard_u != 0.0) {
     const int nm = 2 * hubbard_l + 1, l2 = hubbard_l * hubbard_l;
     // occupations per spin channel: for nspin = 1 both channels hold half of the total
     const double per_spin = nspin == 2 ? 1.0 : 0.5, channels = nspin == 2 ? 1.0 : 2.0;
@@ -416,6 +440,74 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
   std::vector<RMatrix> vlq(nspin);  // sum_k w_k Y_L(k) int r^2 [v_ae n_q - v_ps n~_q] dr
   for (int s = 0; s < nspin; ++s) vlq[s].resize(nL, nq_);
   double exc_total = 0.0;
+  if (nspin == 4) {
+    // non-collinear LSDA: at every point the functional is evaluated in the local spin frame,
+    // n_up/down = (n +- |m|)/2;  dE/dn = (v_up + v_dn)/2,  dE/dm_c = (v_up - v_dn)/2 m_c/|m|
+    LSDA_CHECK(!xc.is_gga(), "non-collinear magnetism is implemented for the LSDA only");
+    const int npts = static_cast<int>(quad_.points.size());
+    const double inv_s4pi = 1.0 / std::sqrt(4 * pi);
+    std::vector<double> dens[4], na(ncut), nb(ncut), e(ncut), va(ncut), vb(ncut), pot(ncut), cq(4 * nq_);
+    for (auto& d : dens) d.resize(ncut);
+    for (int k = 0; k < npts; ++k) {
+      const double* y = ylm_quad_.col(k);
+      for (int c = 0; c < 4; ++c)
+        for (int q = 0; q < nq_; ++q) {
+          double sum = 0.0;
+          for (int L = 0; L < nL; ++L) sum += y[L] * dlq[c](L, q);
+          cq[c * nq_ + q] = sum;
+        }
+      for (int pass = 0; pass < 2; ++pass) {  // 0: all-electron, 1: pseudo
+        const auto& nq = pass == 0 ? nq_ae_ : nq_ps_;
+        const std::vector<double>& core = pass == 0 ? nc : nct;
+        const double sign = pass == 0 ? 1.0 : -1.0;
+        for (int c = 0; c < 4; ++c) {
+          for (int i = 0; i < ncut; ++i) dens[c][i] = c == 0 ? inv_s4pi * core[i] : 0.0;
+          for (int q = 0; q < nq_; ++q) {
+            const double f = cq[c * nq_ + q];
+            if (f == 0.0) continue;
+            const double* g = nq[q].data();
+            for (int i = 0; i < ncut; ++i) dens[c][i] += f * g[i];
+          }
+        }
+        for (int i = 0; i < ncut; ++i) {
+          const double m = std::sqrt(dens[1][i] * dens[1][i] + dens[2][i] * dens[2][i] + dens[3][i] * dens[3][i]);
+          na[i] = 0.5 * (dens[0][i] + m);
+          nb[i] = 0.5 * (dens[0][i] - m);
+        }
+        xc.evaluate(ncut, na.data(), nb.data(), e.data(), va.data(), vb.data());
+        double esum = 0.0;
+        for (int i = 0; i < ncut; ++i) esum += wr2_[i] * e[i];
+        exc_total += sign * quad_.weights[k] * esum;
+        if (!dH) continue;
+        for (int c = 0; c < 4; ++c) {
+          for (int i = 0; i < ncut; ++i) {
+            if (c == 0) {
+              pot[i] = wr2_[i] * 0.5 * (va[i] + vb[i]);
+            } else {
+              const double m = na[i] - nb[i];
+              pot[i] = m > 1e-14 ? wr2_[i] * 0.5 * (va[i] - vb[i]) * dens[c][i] / m : 0.0;
+            }
+          }
+          for (int q = 0; q < nq_; ++q) {
+            const double* g = nq[q].data();
+            double sum = 0.0;
+            for (int i = 0; i < ncut; ++i) sum += pot[i] * g[i];
+            const double w = sign * quad_.weights[k] * sum;
+            for (int L = 0; L < nL; ++L) vlq[c](L, q) += y[L] * w;
+          }
+        }
+      }
+    }
+    energy += exc_total;
+    if (dH)
+      for (int c = 0; c < 4; ++c)
+        for (int ij = 0; ij < n2; ++ij) {
+          double sum = 0.0;
+          for (const GauntEntry& ge : gaunt_ij_[ij]) sum += ge.g * vlq[c](ge.L, ge.q);
+          dH[c].data()[ij] += sum;
+        }
+    return energy;
+  }
   if (xc.is_gga()) {
     energy += onsite_xc_gga(nspin, dlq, dH ? &vlq : nullptr, xc);
     if (dH)
