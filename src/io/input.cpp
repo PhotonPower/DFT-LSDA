@@ -167,8 +167,14 @@ Input read_input(const std::string& path) {
   take("strain", [&](const std::string& v) { inp.strain = to_double(v, "strain"); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||
                  inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons" || inp.task == "elastic" ||
-                 inp.task == "bands",
-             "input: task must be scf, forces, stress, relax, cellrelax, neb, phonons, elastic or bands");
+                 inp.task == "bands" || inp.task == "md",
+             "input: task must be scf, forces, stress, relax, cellrelax, neb, phonons, elastic, bands or md");
+  take("md_steps", [&](const std::string& v) { inp.md.steps = static_cast<int>(to_double(v, "md_steps")); });
+  take("md_dt", [&](const std::string& v) { inp.md.dt_fs = to_double(v, "md_dt"); });
+  take("md_temperature", [&](const std::string& v) { inp.md.temperature = to_double(v, "md_temperature"); });
+  take("md_thermostat", [&](const std::string& v) { inp.md.thermostat = lower(v); });
+  take("md_tau", [&](const std::string& v) { inp.md.tau_fs = to_double(v, "md_tau"); });
+  if (inp.task == "md") p.symmetry = false;  // the trajectory does not keep the symmetry of the start structure
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff
   if ((inp.task == "cellrelax" || inp.task == "elastic") && !smooth_given) p.ecut_smooth = 0.5;
@@ -277,6 +283,9 @@ Input read_input(const std::string& path) {
   LSDA_CHECK(inp.task != "neb" || !inp.frac_final.empty(), "input: task = neb needs the block 'atoms_final'");
   inp.neb.force_tol = inp.relax.force_tol;
   inp.neb.max_step = inp.relax.max_step;
+  inp.md.prefix = inp.prefix;
+  inp.md.restart = inp.restart;
+  inp.md.seed = p.seed;
   inp.phonons.prefix = inp.prefix;
   inp.phonons.restart = inp.restart;
   inp.neb.prefix = inp.prefix;

@@ -284,6 +284,12 @@ Dabei behoben: Das SCF-Abbruchkriterium zählte die Residuen praktisch unbesetzt
 ausgelenkte 8-Atom-Al-Zelle lief deshalb über 70 statt 28 Schritte, obwohl die Dichte längst konvergiert
 war. Die Statistik umfasst jetzt nur Bänder mit Besetzung > 1e-6.
 
+## 7i. Molekulardynamik
+
+Zwei Al-Atome, 600 K Starttemperatur, 12 Schritte zu 3 fs (NVE): Die Erhaltungsgröße E_pot + E_kin schwankt
+um höchstens 1.4e-5 Ha ohne erkennbare Drift, während 2.7 mHa zwischen kinetischer und potentieller Energie
+umverteilt werden. Thermostat und Neustart sind **nicht** getestet; längere Trajektorien wurden nicht gerechnet.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

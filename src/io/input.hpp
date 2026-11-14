@@ -5,6 +5,7 @@
 #include "crystal/crystal.hpp"
 #include "dft/calculation.hpp"
 #include "dft/elastic.hpp"
+#include "dft/md.hpp"
 #include "dft/neb.hpp"
 #include "dft/phonons.hpp"
 #include "dft/relax.hpp"
@@ -12,7 +13,7 @@
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons | elastic | bands
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons | elastic | bands | md
   bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
   bool write_density = false;  // <prefix>.rho.cube (and .mag.cube) after the final SCF
@@ -28,6 +29,7 @@ struct Input {
   RelaxParams relax;
   CellRelaxParams cell;
   NebParams neb;
+  MdParams md;
   PhononParams phonons;
   // task = phonons with phonon_supercell: the input cell is primitive; force constants from the supercell,
   // dispersion along kpath and frequencies on a q-mesh (vibrational thermodynamics, quasi-harmonic approximation)

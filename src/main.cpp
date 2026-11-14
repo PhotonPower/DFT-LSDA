@@ -233,7 +233,21 @@ static int run(int argc, char** argv) {
       calc_ptr->save_checkpoint(chk);
     }
     Calculation& calc = *calc_ptr;
-    if (inp.task == "cellrelax") {
+    if (inp.task == "md") {
+      std::vector<double> masses;
+      for (int a = 0; a < calc.crystal().natoms(); ++a) {
+        const Species& sp = calc.crystal().species[calc.crystal().atoms[a].species];
+        masses.push_back(sp.mass > 0.0 ? sp.mass : atomic_mass(static_cast<int>(std::lround(sp.setup.Z))));
+      }
+      calc.set_verbosity(0);  // one line per MD step instead of the SCF tables
+      const MdResult r = run_md(calc, masses, inp.md);
+      if (!r.stopped) {
+        logf("\n  MD finished: %d steps, mean temperature %.1f K, largest deviation of the conserved energy %.2e Ha\n", r.steps,
+             r.mean_temperature, r.drift);
+        logf("  Trajectory: %s.md.xyz (extended XYZ)\n", inp.prefix.c_str());
+        converged = true;
+      }
+    } else if (inp.task == "cellrelax") {
     } else if (inp.task == "relax") {
       inp.relax.on_step = [&](const Calculation& c, const std::vector<Vec3>& f, bool scf_ok) {
         c.save_checkpoint(chk);

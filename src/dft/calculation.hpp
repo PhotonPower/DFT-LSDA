@@ -93,6 +93,7 @@ class Calculation {
   const Crystal& crystal() const { return c_; }
   const Energies& energies() const { return en_; }
   const Params& params() const { return p_; }
+  void set_verbosity(int v) { p_.verbosity = v; }  // 0: no SCF tables (used inside long loops such as MD)
   double fermi_level(int s = 0) const { return occ_.efermi[s]; }
   double total_magnetization() const { return occ_.n_spin[0] - occ_.n_spin[1]; }
   // Pseudo electron density (valence + pseudo core; without the augmentation inside the PAW spheres) on the

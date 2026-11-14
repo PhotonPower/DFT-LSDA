@@ -74,7 +74,7 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle), `elastic` (elastische Konstanten), `bands` (SCF + Bandstruktur) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle), `elastic` (elastische Konstanten), `bands` (SCF + Bandstruktur), `md` (Molekulardynamik) |
 | `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
 | `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
@@ -107,6 +107,8 @@ end
 | `dos`, `dos_width`, `dos_points` | `false`, Verschmierungsbreite, 2001 | Zustandsdichte nach dem letzten SCF in `<prefix>.dos`: gesamt und projiziert auf die PAW-Kugeln (Atom, l, Spin); Gauß-Breite in Ha |
 | `write_density` | `false` | glatte Elektronendichte (und Magnetisierung) im Cube-Format: `<prefix>.rho.cube`, `<prefix>.mag.cube` |
 | `kpath_points` | 20 | Punkte je Segment des k-Pfads bei `task = bands` |
+| `md_steps`, `md_dt`, `md_temperature` | 100, 2 fs, 300 K | Molekulardynamik: Schritte, Zeitschritt, Start- bzw. Zieltemperatur |
+| `md_thermostat`, `md_tau` | `none`, 100 fs | `none` (NVE) oder `berendsen` mit Relaxationszeit |
 | `displacement` | 0.02 bohr | Auslenkung für `task = phonons` (zentrale Differenzen) |
 | `phonon_supercell`, `phonon_qgrid` | `1 1 1`, `8 8 8` | Superzelle der (primitiven) Eingabezelle für Kraftkonstanten und Dispersion; q-Gitter für `<prefix>.phmesh.json` |
 | `strain` | 0.005 | Dehnungsamplitude für `task = elastic` |
@@ -216,6 +218,13 @@ alle Energien ein; ausgegeben werden zusätzlich die Schwingungsbeiträge und Bi
 zusammensetzungserhaltenden Reaktionen. Voraussetzung sind gut relaxierte Strukturen und scharf
 konvergierte Kräfte (`scf_tol = 1e-11`), sonst entstehen imaginäre Moden.
 
+## Molekulardynamik
+
+`task = md`: Born-Oppenheimer-Dynamik mit Velocity-Verlet (NVE) oder Berendsen-Thermostat, ohne Symmetrie.
+Pro Schritt eine Zeile (potentielle und kinetische Energie, Erhaltungsgröße, Temperatur), Trajektorie in
+`<prefix>.md.xyz` (erweitertes XYZ). Nach jedem Schritt wird `<prefix>.md.restart` geschrieben; mit
+`restart = true` (und `max_seconds`) läuft die Dynamik in Zeitscheiben weiter. Massen wie bei den Phononen.
+
 ## Bandstruktur und Dichte
 
 `task = bands` rechnet nach dem SCF die Eigenwerte entlang eines k-Pfads im selbstkonsistenten Potential:
@@ -320,7 +329,7 @@ src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
-              Relaxation, NEB, Phononen, elastische Konstanten
+              Relaxation, NEB, Phononen, elastische Konstanten, Molekulardynamik
 src/io        Eingabe, JSON-Ausgabe
 tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik, Größen-Extrapolation, quasiharmonische Näherung
 tests         Unit- und Regressionstests
