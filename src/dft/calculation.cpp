@@ -228,8 +228,7 @@ void Calculation::init_wavefunctions() {
 }
 
 // Pseudo partial waves of the bound atomic states of all atoms in the plane-wave basis of k-point ik.
-CMatrix Calculation::atomic_orbitals(int ik) const {
-  const PWBasis& b = basis_[ik];
+CMatrix Calculation::atomic_orbitals(const PWBasis& b) const {
   int nao = 0;
   for (int a = 0; a < c_.natoms(); ++a) {
     const PawSetup& s = c_.setup(a);
@@ -671,7 +670,7 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
       if (first_solve_) {
         // start vectors: lowest states in the span of the atomic orbitals, padded with random vectors
         const double t0 = wall_time();
-        CMatrix start = atomic_orbitals(ik);
+        CMatrix start = atomic_orbitals(basis_[ik]);
         const int nao = start.cols(), npw = basis_[ik].npw;
         const int nrand = std::max(0, nbands_ - nao) + (nao < nbands_ ? 0 : std::min(4, nbands_));
         CMatrix all(npw, nao + nrand);
@@ -1178,6 +1177,71 @@ void Calculation::write_dos(const std::string& path, double width, int npoints) 
     std::fprintf(f, "\n");
   }
   std::fclose(f);
+}
+
+void Calculation::write_cube(const std::string& path, bool magnetization) const {
+  LSDA_CHECK(have_density_, "write_cube: no density");
+  if (!par::root()) return;
+  const size_t nf = fft_f_.size();
+  CVec work(nf, cplx(0.0));
+  for (int ig = 0; ig < gs_.ng; ++ig) {
+    cplx v;
+    if (magnetization)
+      v = nspin_ == 2 ? rho_[0][ig] - rho_[1][ig] : cplx(0.0);
+    else
+      v = rho_[0][ig] + (nspin_ == 2 ? rho_[1][ig] : cplx(0.0)) + nct_G_[ig];
+    work[gs_.idx_fine[ig]] = v;
+  }
+  fft_f_.backward(work.data());
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
+  std::fprintf(f, "lsda: %s (electrons/bohr^3)\n", magnetization ? "pseudo magnetization density n_up - n_down" : "pseudo electron density, valence + pseudo core");
+  std::fprintf(f, "smooth part only: the augmentation inside the PAW spheres is not included\n");
+  std::fprintf(f, "%5d %12.6f %12.6f %12.6f\n", c_.natoms(), 0.0, 0.0, 0.0);
+  for (int d = 0; d < 3; ++d)
+    std::fprintf(f, "%5d %12.6f %12.6f %12.6f\n", fft_f_.n(d), c_.A[d][0] / fft_f_.n(d), c_.A[d][1] / fft_f_.n(d), c_.A[d][2] / fft_f_.n(d));
+  for (int a = 0; a < c_.natoms(); ++a) {
+    Vec3 fr = c_.atoms[a].frac;
+    for (double& x : fr) x -= std::floor(x);
+    const Vec3 r = c_.cart(fr);
+    std::fprintf(f, "%5d %12.6f %12.6f %12.6f %12.6f\n", static_cast<int>(std::lround(c_.setup(a).Z)), c_.setup(a).n_valence, r[0], r[1], r[2]);
+  }
+  for (size_t i = 0; i < nf; ++i) std::fprintf(f, "%13.5e%s", work[i].real(), (i % 6 == 5 || (i + 1) % fft_f_.n(2) == 0) ? "\n" : "");
+  std::fclose(f);
+}
+
+std::vector<std::vector<double>> Calculation::eigenvalues_at(const Vec3& kfrac, double tol, int max_iter) {
+  LSDA_CHECK(have_occ_, "eigenvalues_at: run scf() first");
+  const int nat = c_.natoms();
+  const PWBasis b = make_pw_basis(c_, KPoint{kfrac, 0.0}, p_.ecut, fft_c_, p_.ecut_smooth);
+  LSDA_CHECK(b.npw >= nbands_, "eigenvalues_at: fewer plane waves than bands");
+  const Projectors proj = make_projectors(c_, b);
+  std::vector<std::vector<double>> out(nspin_);
+  std::mt19937_64 rng(p_.seed);
+  std::uniform_real_distribution<double> u(-0.5, 0.5);
+  for (int s = 0; s < nspin_; ++s) {
+    std::vector<const RMatrix*> dh(nat), ds(nat);
+    for (int a = 0; a < nat; ++a) {
+      dh[a] = &dH_[a][s];
+      ds[a] = &dS_[a];
+    }
+    const Hamiltonian h(b, fft_c_, vcoarse_[s].data(), proj, dh, ds);
+    // start: lowest states spanned by the atomic orbitals, padded with random vectors
+    CMatrix ao = atomic_orbitals(b);
+    const int nao = ao.cols(), nrand = std::max(0, nbands_ - nao) + (nao < nbands_ ? 0 : std::min(4, nbands_));
+    CMatrix x(b.npw, nao + nrand);
+    std::copy(ao.data(), ao.data() + ao.size(), x.data());
+    for (int n = 0; n < nrand; ++n)
+      for (int ig = 0; ig < b.npw; ++ig) x(ig, nao + n) = cplx(u(rng), u(rng)) / (1.0 + 2.0 * b.kin[ig]);
+    if (!(nao + nrand <= b.npw && subspace_start(h, x, nbands_))) {
+      x.resize(b.npw, nbands_);
+      for (int n = 0; n < nbands_; ++n)
+        for (int ig = 0; ig < b.npw; ++ig) x(ig, n) = cplx(u(rng), u(rng)) / (1.0 + 2.0 * b.kin[ig]);
+    }
+    const std::vector<double> tb(nbands_, tol);
+    ppcg(h, x, out[s], tb, std::max(1, nbands_ - std::max(2, nbands_ / 8)), max_iter, nullptr, p_.ppcg_block);
+  }
+  return out;
 }
 
 std::vector<double> Calculation::local_moments() const {

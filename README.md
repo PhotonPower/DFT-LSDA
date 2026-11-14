@@ -74,7 +74,7 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle), `elastic` (elastische Konstanten) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle), `elastic` (elastische Konstanten), `bands` (SCF + Bandstruktur) |
 | `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
 | `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
@@ -105,6 +105,8 @@ end
 | `paw_ntheta` | 7 | Winkelquadratur der On-site-XC-Korrektur (2n² Punkte) |
 | `relax_steps`, `force_tol`, `max_step` | 50, 5e-4 Ha/bohr, 0.3 bohr | Relaxation (`force_tol`, `max_step` gelten auch für NEB) |
 | `dos`, `dos_width`, `dos_points` | `false`, Verschmierungsbreite, 2001 | Zustandsdichte nach dem letzten SCF in `<prefix>.dos`: gesamt und projiziert auf die PAW-Kugeln (Atom, l, Spin); Gauß-Breite in Ha |
+| `write_density` | `false` | glatte Elektronendichte (und Magnetisierung) im Cube-Format: `<prefix>.rho.cube`, `<prefix>.mag.cube` |
+| `kpath_points` | 20 | Punkte je Segment des k-Pfads bei `task = bands` |
 | `displacement` | 0.02 bohr | Auslenkung für `task = phonons` (zentrale Differenzen) |
 | `strain` | 0.005 | Dehnungsamplitude für `task = elastic` |
 | `neb_images`, `neb_spring`, `neb_climb`, `neb_steps` | 5, 0.1 Ha/bohr², `true`, 200 | NEB: Zwischenbilder, Federkonstante, Climbing Image, maximale Schritte |
@@ -204,6 +206,23 @@ Auswertung mit `--vibrations` auf. Die harmonische freie Energie der Γ-Moden je
 alle Energien ein; ausgegeben werden zusätzlich die Schwingungsbeiträge und Bildungsentropien der
 zusammensetzungserhaltenden Reaktionen. Voraussetzung sind gut relaxierte Strukturen und scharf
 konvergierte Kräfte (`scf_tol = 1e-11`), sonst entstehen imaginäre Moden.
+
+## Bandstruktur und Dichte
+
+`task = bands` rechnet nach dem SCF die Eigenwerte entlang eines k-Pfads im selbstkonsistenten Potential:
+
+```
+begin kpath          # Label und fraktionale reziproke Koordinaten
+  G 0.0 0.0 0.0
+  X 0.5 0.0 0.5
+  L 0.5 0.5 0.5
+end
+```
+
+Ausgabe `<prefix>.bands` (Pfadlänge, Bandenergien relativ zu E_F in eV, bei Spinpolarisation erst alle
+Bänder für Spin auf, dann für Spin ab). Pfadpunkte, die auch im SCF-k-Gitter liegen, werden automatisch
+gegen die SCF-Eigenwerte geprüft. `write_density = true` schreibt die glatte Dichte (Valenz + Pseudo-Rumpf,
+ohne den Anteil in den PAW-Kugeln) als Cube-Datei, z. B. für VESTA.
 
 ## Zustandsdichte
 

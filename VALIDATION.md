@@ -255,6 +255,13 @@ Nicht geprüft: Lauf mit einer echten MPI-Bibliothek, Skalierung, die komplette 
   unverändert.
 * **Größen-Extrapolation** (synthetische Daten mit exaktem 1/V-Verhalten): E_∞ wird exakt wiedergefunden.
 
+## 7f. Bandstruktur und Dichte-Ausgabe
+
+fcc-Al (1 Atom, 10 Ha, 4×4×4): Bandboden bei Γ −10.92 eV unter E_F, Entartungen bei Γ und L wie erwartet;
+am gemeinsamen k-Punkt (Γ) stimmen die Bandstruktur-Eigenwerte mit den SCF-Eigenwerten auf 3e-15 Ha überein.
+Die Cube-Datei hat die richtige Punktzahl und ein positives, integrierbares Dichtefeld. Für NiAl/FeAl nicht
+gerechnet.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

@@ -199,6 +199,73 @@ static int run(int argc, char** argv) {
       logf("    pressure = %.6f GPa\n", -(sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0 * gpa);
     }
     write_results(json, calc, converged, forces.empty() ? nullptr : &forces, inp.stress ? &sigma : nullptr);
+    if (inp.write_density) {
+      calc.write_cube(inp.prefix + ".rho.cube", false);
+      if (calc.n_spin() == 2) calc.write_cube(inp.prefix + ".mag.cube", true);
+      logf("\n  Pseudo density written to %s.rho.cube%s\n", inp.prefix.c_str(), calc.n_spin() == 2 ? " (magnetization: .mag.cube)" : "");
+    }
+    if (inp.task == "bands" && converged) {
+      // non-self-consistent eigenvalues along the k-path in the converged potential
+      const Crystal& c = calc.crystal();
+      std::vector<Vec3> ks;
+      std::vector<double> dist;
+      std::vector<std::pair<double, std::string>> ticks;
+      double d = 0.0;
+      for (size_t seg = 0; seg + 1 < inp.kpath.size(); ++seg) {
+        const Vec3 &k0 = inp.kpath[seg].second, &k1 = inp.kpath[seg + 1].second;
+        Vec3 dk{};
+        for (int j = 0; j < 3; ++j)
+          for (int i = 0; i < 3; ++i) dk[j] += (k1[i] - k0[i]) * c.B[i][j];
+        const double len = norm(dk);
+        if (seg == 0) ticks.push_back({0.0, inp.kpath[0].first});
+        for (int i = (seg == 0 ? 0 : 1); i <= inp.kpath_points; ++i) {
+          const double t = static_cast<double>(i) / inp.kpath_points;
+          ks.push_back({k0[0] + t * (k1[0] - k0[0]), k0[1] + t * (k1[1] - k0[1]), k0[2] + t * (k1[2] - k0[2])});
+          dist.push_back(d + t * len);
+        }
+        d += len;
+        ticks.push_back({d, inp.kpath[seg + 1].first});
+      }
+      const int nb = calc.n_bands(), ns = calc.n_spin();
+      std::vector<double> e(ks.size() * ns * nb, 0.0);
+      double check = 0.0;
+      int n_checked = 0;
+      for (size_t ik = 0; ik < ks.size(); ++ik) {
+        if (!par::owns(static_cast<int>(ik))) continue;
+        const auto ev = calc.eigenvalues_at(ks[ik]);
+        for (int s = 0; s < ns; ++s)
+          for (int n = 0; n < nb; ++n) e[(ik * ns + s) * nb + n] = ev[s][n];
+        // points of the path that belong to the SCF k-point set must reproduce the SCF eigenvalues
+        for (size_t jk = 0; jk < calc.kpoints().size(); ++jk) {
+          const Vec3& q = calc.kpoints()[jk].frac;
+          if (std::abs(q[0] - ks[ik][0]) + std::abs(q[1] - ks[ik][1]) + std::abs(q[2] - ks[ik][2]) > 1e-9) continue;
+          ++n_checked;
+          for (int s = 0; s < ns; ++s)
+            for (int n = 0; n < nb / 2; ++n) check = std::max(check, std::abs(ev[s][n] - calc.scf_eigenvalues(static_cast<int>(jk), s)[n]));
+        }
+      }
+      par::sum(e.data(), e.size());
+      par::max(&check, 1);
+      par::sum(&n_checked, 1);
+      if (par::root()) {
+        const std::string bf = inp.prefix + ".bands";
+        std::FILE* f = std::fopen(bf.c_str(), "w");
+        LSDA_CHECK(f != nullptr, "cannot write '" + bf + "'");
+        std::fprintf(f, "# band structure: column 1 = path length (1/bohr), then %d bands%s; energies in eV relative to E_F\n", nb,
+                     ns == 2 ? " spin up followed by the bands of spin down" : "");
+        std::fprintf(f, "# the highest bands are not converged (increase nbands if they are needed)\n# special points:");
+        for (const auto& [x, label] : ticks) std::fprintf(f, "  %s = %.6f", label.c_str(), x);
+        std::fprintf(f, "\n");
+        for (size_t ik = 0; ik < ks.size(); ++ik) {
+          std::fprintf(f, "%10.6f", dist[ik]);
+          for (int i = 0; i < ns * nb; ++i) std::fprintf(f, " %10.5f", (e[ik * ns * nb + i] - calc.fermi_level()) * hartree_in_ev);
+          std::fprintf(f, "\n");
+        }
+        std::fclose(f);
+        logf("\n  Band structure (%zu k-points) written to %s\n", ks.size(), bf.c_str());
+        if (n_checked > 0) logf("  Consistency with the SCF eigenvalues at %d common k-point(s): max deviation %.2e Ha\n", n_checked, check);
+      }
+    }
     if (inp.dos) {
       const std::string dos_file = inp.prefix + ".dos";
       calc.write_dos(dos_file, inp.dos_width > 0.0 ? inp.dos_width : calc.params().width, inp.dos_points);

@@ -103,6 +103,8 @@ Input read_input(const std::string& path) {
   take("task", [&](const std::string& v) { inp.task = lower(v); });
   take("prefix", [&](const std::string& v) { inp.prefix = v; });
   take("stress", [&](const std::string& v) { inp.stress = to_bool(v, "stress"); });
+  take("write_density", [&](const std::string& v) { inp.write_density = to_bool(v, "write_density"); });
+  take("kpath_points", [&](const std::string& v) { inp.kpath_points = static_cast<int>(to_double(v, "kpath_points")); });
   take("dos", [&](const std::string& v) { inp.dos = to_bool(v, "dos"); });
   take("dos_width", [&](const std::string& v) { inp.dos_width = to_double(v, "dos_width"); });
   take("dos_points", [&](const std::string& v) { inp.dos_points = static_cast<int>(to_double(v, "dos_points")); });
@@ -162,8 +164,9 @@ Input read_input(const std::string& path) {
   take("displacement", [&](const std::string& v) { inp.phonons.displacement = to_double(v, "displacement"); });
   take("strain", [&](const std::string& v) { inp.strain = to_double(v, "strain"); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||
-                 inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons" || inp.task == "elastic",
-             "input: task must be scf, forces, stress, relax, cellrelax, neb, phonons or elastic");
+                 inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons" || inp.task == "elastic" ||
+                 inp.task == "bands",
+             "input: task must be scf, forces, stress, relax, cellrelax, neb, phonons, elastic or bands");
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff
   if ((inp.task == "cellrelax" || inp.task == "elastic") && !smooth_given) p.ecut_smooth = 0.5;
@@ -245,6 +248,14 @@ Input read_input(const std::string& path) {
     if (t.size() == 5) at.magmom = to_double(t[4], "atoms");
     inp.crystal.atoms.push_back(at);
   }
+  // k-path of a band-structure calculation:  <label> k1 k2 k3  (fractional reciprocal coordinates)
+  if (blocks.count("kpath"))
+    for (const std::string& l : blocks["kpath"]) {
+      const auto t = split(l);
+      LSDA_CHECK(t.size() == 4, "input: kpath line must be '<label> k1 k2 k3'");
+      inp.kpath.push_back({t[0], Vec3{to_double(t[1], "kpath"), to_double(t[2], "kpath"), to_double(t[3], "kpath")}});
+    }
+  LSDA_CHECK(inp.task != "bands" || inp.kpath.size() >= 2, "input: task = bands needs a block 'kpath' with at least two points");
   // second end point of a NEB path: same atoms in the same order
   if (blocks.count("atoms_final")) {
     LSDA_CHECK(blocks["atoms_final"].size() == inp.crystal.atoms.size(), "input: atoms_final needs the same number of atoms as atoms");
@@ -269,7 +280,7 @@ Input read_input(const std::string& path) {
   inp.neb.prefix = inp.prefix;
   inp.neb.restart = inp.restart;
   for (const auto& [name, lines] : blocks)
-    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms" || name == "atoms_final" || name == "hubbard",
+    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms" || name == "atoms_final" || name == "hubbard" || name == "kpath",
                "input: unknown block '" + name + "'");
   return inp;
 }

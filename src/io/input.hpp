@@ -12,9 +12,13 @@
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons | elastic
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons | elastic | bands
   bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
+  bool write_density = false;  // <prefix>.rho.cube (and .mag.cube) after the final SCF
+  // band structure (task = bands): path through the listed points, kpath_points steps per segment
+  std::vector<std::pair<std::string, Vec3>> kpath;
+  int kpath_points = 20;
   bool dos = false;          // write <prefix>.dos after the final SCF
   double dos_width = 0.0;    // Gaussian width (Ha); 0: the smearing width
   int dos_points = 2001;

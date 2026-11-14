@@ -95,6 +95,18 @@ class Calculation {
   const Params& params() const { return p_; }
   double fermi_level(int s = 0) const { return occ_.efermi[s]; }
   double total_magnetization() const { return occ_.n_spin[0] - occ_.n_spin[1]; }
+  // Pseudo electron density (valence + pseudo core; without the augmentation inside the PAW spheres) on the
+  // fine grid in Gaussian cube format; magnetization = true writes n_up - n_down instead of the total.
+  void write_cube(const std::string& path, bool magnetization) const;
+  // Kohn-Sham eigenvalues [spin][band] at an arbitrary k-point (fractional reciprocal coordinates) in the
+  // self-consistent potential (non-self-consistent band-structure step).
+  std::vector<std::vector<double>> eigenvalues_at(const Vec3& kfrac, double tol = 1e-7, int max_iter = 80);
+  // eigenvalues of the self-consistent calculation at k-point ik (for consistency checks)
+  const std::vector<double>& scf_eigenvalues(int ik, int spin) const { return eig_[static_cast<size_t>(ik) * nspin_ + spin]; }
+  const std::vector<KPoint>& kpoints() const { return kpts_; }
+  int n_bands() const { return nbands_; }
+  int n_spin() const { return nspin_; }
+
   // Density of states (Gaussian broadening, width in Ha) and its projection on the PAW spheres, resolved
   // by atom, angular momentum and spin. Text file: energy relative to the Fermi level in eV, states/eV.
   void write_dos(const std::string& path, double width, int npoints) const;
@@ -116,7 +128,7 @@ class Calculation {
   void setup_structure();
   void init_density();
   void init_wavefunctions();
-  CMatrix atomic_orbitals(int ik) const;
+  CMatrix atomic_orbitals(const PWBasis& b) const;
   Functional evaluate(const RhoG& rho, const DMat& D, bool build_potential);
   void add_compensation(const std::vector<std::vector<double>>& Q, std::vector<cplx>& out) const;
   void project_on_shape(const std::vector<cplx>& v, std::vector<std::vector<double>>& W) const;
