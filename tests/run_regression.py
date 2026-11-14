@@ -188,6 +188,19 @@ def relax_and_restart(lsda, pseudo, tmp):
     except Exception as e:  # noqa: BLE001
         print(f"[FAIL] NEB task: {e}\n{out.stdout[-800:]}{out.stderr}")
         failures += 1
+    # Gamma-point phonons of cubic NiAl: three acoustic modes at zero and a threefold degenerate optical mode
+    with open(os.path.join(tmp, "ph.in"), "w") as f:
+        f.write(f"prefix = ph\npseudo_dir = {pseudo}\ntask = phonons\necut = 15\n" + (NIAL % "0.5").replace("ecut = 20\n", ""))
+    out = subprocess.run([lsda, "ph.in"], cwd=tmp, capture_output=True, text=True)
+    try:
+        nu = json.load(open(os.path.join(tmp, "ph.phonons.json")))["frequencies_THz"]
+        split = max(nu[3:]) - min(nu[3:])
+        # the three displacement directions are independent calculations: the degeneracy holds up to force noise
+        check(out.returncode == 0 and max(abs(x) for x in nu[:3]) < 1e-3 and split < 2e-2 and 3 < nu[3] < 20,
+              f"phonons of NiAl: optical mode {nu[3]:.3f} THz, degeneracy", split, 2e-2)
+    except Exception as e:  # noqa: BLE001
+        print(f"[FAIL] phonons: {e}\n{out.stdout[-800:]}{out.stderr}")
+        failures += 1
     # interrupted SCF (here: iteration limit; the wall-time limit max_seconds uses the same path):
     # the checkpoint holds the unconverged density and wavefunctions, the restart must finish the job
     with open(os.path.join(tmp, "cut.in"), "w") as f:

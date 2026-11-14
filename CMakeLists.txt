@@ -49,6 +49,7 @@ add_library(lsdacore STATIC
   src/dft/forces.cpp
   src/dft/relax.cpp
   src/dft/neb.cpp
+  src/dft/phonons.cpp
   src/io/input.cpp
 )
 target_include_directories(lsdacore PUBLIC src ${FFTW3_INCLUDE_DIR})

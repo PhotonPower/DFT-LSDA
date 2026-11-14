@@ -9,6 +9,8 @@
 #              ECUT (Ha, default 25), WIDTH (smearing width in Ha, default 0.01), LSDA (path to the executable),
 #              DEFECT_TASK (relax = fixed volume [default], cellrelax = zero pressure),
 #              ECUT_SMOOTH (Ha, default 0.5; must be identical in all calculations that are compared),
+#              PHONONS=1 (additionally Gamma-point phonons of every relaxed supercell -> vibrational
+#              formation entropies in the thermodynamic model; many force calculations),
 #              MAX_SECONDS (wall-time limit per lsda run; the script stops with exit code 4 and
 #              continues from the checkpoint when it is started again)
 set -e
@@ -35,6 +37,18 @@ for D in none vac_tm vac_al al_tm tm_al; do
     fi
   fi
   grep -E "free energy  E-TS|Relaxation converged|NOT" "$D.out" | tail -2
+  if [ "${PHONONS:-0}" = 1 ] && [ ! -f "$D.phonons.json" ]; then
+    # phonons of the relaxed structure: positions (and cell) come from the checkpoint of the relaxation
+    python3 "$ROOT/tools/b2_supercell.py" --tm "$TM" --a "$A" --n "$N" --defect "$D" --task phonons --prefix "$D" \
+        --xc "${XC:-lda}" --kpoints $KP --nspin "$NSPIN" --moment "$MOM" --moment-antisite 3.0 --ecut "${ECUT:-25}" \
+        --width "${WIDTH:-0.01}" --set restart=true --set ecut_smooth="${ECUT_SMOOTH:-0.5}" --set max_seconds="${MAX_SECONDS:-0}" \
+        --set scf_tol=1e-11 --pseudo-dir "$ROOT/pseudos" -o "$D.ph.in" > /dev/null
+    rc=0
+    "$LSDA" "$D.ph.in" >> "$D.ph.out" || rc=$?
+    [ "$rc" -eq 4 ] && { echo "$D: wall-time limit reached during the phonon run - start the script again"; exit 4; }
+    [ "$rc" -ne 0 ] && { echo "$D: phonon run failed with exit code $rc"; exit "$rc"; }
+  fi
 done
+VIB=""; [ "${PHONONS:-0}" = 1 ] && VIB="--vibrations"
 python3 "$ROOT/tools/defect_thermo.py" --perfect none.json --vac-a vac_tm.json --vac-b vac_al.json \
-    --b-on-a al_tm.json --a-on-b tm_al.json --names "$TM" Al | tee thermo.txt
+    --b-on-a al_tm.json --a-on-b tm_al.json --names "$TM" Al $VIB | tee thermo.txt

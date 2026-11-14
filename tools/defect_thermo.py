@@ -33,7 +33,13 @@ V_eff = -kT d ln c_d / dp.  The volumes are taken from
   * supercells at the fixed volume of the perfect cell with stresses (stress = true) and --bulk-modulus B:
     v_d = V (p_d - p_0)/B from the residual pressure, and the energies are corrected to zero pressure by
     the elastic relaxation energy -V (p_d - p_0)^2 / (2 B)   (first-order elastic estimate).
-Vibrational entropies are neglected (configurational entropy only).
+
+Vibrations (--vibrations).  If every supercell has Gamma-point phonon frequencies (task = phonons, file
+<prefix>.phonons.json next to <prefix>.json), the harmonic vibrational free energy
+    F_vib(T) = sum_modes [ h nu / 2 + kT ln(1 - exp(-h nu / kT)) ]        (three acoustic modes omitted)
+is added to every supercell energy, so that eps_d and eps0 become temperature dependent and the
+concentrations contain the vibrational formation entropies.  Without this option only the
+configurational entropy is taken into account.
 """
 import argparse
 import json
@@ -43,10 +49,24 @@ HARTREE_EV = 27.211386245988
 KB_EV = 8.617333262e-5
 BOHR3_A3 = 0.529177210903 ** 3
 GPA_A3_EV = 6.241509074e-3   # 1 GPa * 1 A^3 in eV
+H_EV_PER_THZ = 4.135667696e-3  # h * 1 THz in eV
 
 
 def expc(x):
     return math.exp(max(-700.0, min(700.0, x)))
+
+
+def vibrational_free_energy(freqs_thz, T):
+    """Harmonic free energy (eV) of the Gamma-point modes; the three modes of smallest |nu| are acoustic."""
+    modes = sorted(freqs_thz, key=abs)[3:]
+    kt = KB_EV * T
+    f = 0.0
+    for nu in modes:
+        if nu <= 0.0:
+            continue  # imaginary mode (reported by the caller)
+        e = H_EV_PER_THZ * nu
+        f += 0.5 * e + (kt * math.log1p(-math.exp(-e / kt)) if kt > 0 else 0.0)
+    return f
 
 
 class B2Model:
@@ -125,6 +145,8 @@ def main():
                     help="atomic fraction of the transition metal")
     ap.add_argument("--names", nargs=2, default=["TM", "Al"])
     ap.add_argument("--p", type=float, nargs="+", default=[0.0], help="pressures in GPa")
+    ap.add_argument("--vibrations", action="store_true",
+                    help="add harmonic vibrational free energies from <prefix>.phonons.json of every supercell")
     ap.add_argument("--bulk-modulus", type=float, default=None,
                     help="bulk modulus in GPa: estimate relaxation volumes of fixed-volume supercells from their pressure")
     args = ap.parse_args()
@@ -194,8 +216,43 @@ def main():
         txt = ", ".join(f"{k}: {v - ref:+.4f}" for k, v in opts.items())
         print(f"  {side}: stable constitutional defect = {best}   ({txt})")
 
-    model0 = B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"])
     order = ["V_a", "B_a", "V_b", "A_b"]
+    # vibrational free energies of the supercells (temperature dependent shifts of all energies)
+    freqs = None
+    if args.vibrations:
+        freqs = {}
+        for key, path in dict(files, perfect=args.perfect).items():
+            ph = path[:-5] + ".phonons.json" if path.endswith(".json") else path + ".phonons.json"
+            try:
+                freqs[key] = json.load(open(ph))["frequencies_THz"]
+            except OSError:
+                raise SystemExit(f"--vibrations: {ph} not found (run task = phonons for every supercell)")
+            n_imag = sum(1 for nu in sorted(freqs[key], key=abs)[3:] if nu < 0)
+            if n_imag:
+                print(f"WARNING: {ph}: {n_imag} imaginary mode(s) ignored")
+
+    def model_at(T):
+        """Model with the supercell free energies at temperature T (static energies without --vibrations)."""
+        if freqs is None:
+            return B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"])
+        fp = vibrational_free_energy(freqs["perfect"], T)
+        shift = {d: vibrational_free_energy(freqs[d], T) - fp for d in order}
+        return B2Model(eps0 + fp / n_cells, *(eps[d] + shift[d] for d in order))
+
+    if freqs is not None:
+        print("\nVibrational contributions to the composition-conserving reactions")
+        print("  (Delta F_vib in eV, formation entropy S = -d(Delta F_vib)/dT in k_B; Gamma-point modes of the supercells)")
+
+        def reaction_fvib(T):
+            m = model_at(T)
+            return [2 * m.e["V_a"] + m.e["A_b"] + m.eps0 - reactions[0][1], 2 * m.e["V_b"] + m.e["B_a"] + m.eps0 - reactions[1][1],
+                    m.e["V_a"] + m.e["V_b"] + m.eps0 - reactions[2][1], m.e["B_a"] + m.e["A_b"] - reactions[3][1]]
+        for T in args.T:
+            f0, fp_, fm_ = reaction_fvib(T), reaction_fvib(T + 1.0), reaction_fvib(T - 1.0)
+            print(f"  T = {T:.0f} K")
+            for (name, _), df, a_, b_ in zip(reactions, f0, fp_, fm_):
+                print(f"    {name:42s} {df:9.4f} {-(a_ - b_) / 2.0 / KB_EV:8.3f}")
+    model0 = model_at(args.T[0])
     have_vol = volume_mode is not None
     if have_vol:
         atomic = omega0 / 2.0
@@ -209,8 +266,11 @@ def main():
     elif any(p != 0.0 for p in args.p):
         raise SystemExit("pressure requested, but the supercells carry no volume information "
                          "(use cellrelax cells, or stress = true together with --bulk-modulus)")
+    def solve_at(x, T, p):
+        m = model_at(T)
+        return (m.at_pressure(p, omega0, vol) if have_vol else m).solve(x, T)
+
     for p in args.p:
-        model = model0.at_pressure(p, omega0, vol) if have_vol else model0
         for T in args.T:
             head = f"\nT = {T:.0f} K, p = {p:g} GPa   (concentrations per sublattice site; E_eff in eV"
             print(head + ("; V_eff in atomic volumes)" if have_vol else ")"))
@@ -218,13 +278,16 @@ def main():
                   " ".join(f"{'E(' + label[d] + ')':>9s}" for d in order) +
                   ("  " + " ".join(f"{'V(' + label[d] + ')':>8s}" for d in order) if have_vol else "") + f"   mu_{A}-mu_{B}")
             for x in args.x:
-                ma, mb, c = model.solve(x, T)
-                ee = model.effective_energies(x, T)
+                ma, mb, c = solve_at(x, T, p)
+                # effective formation energies (enthalpies with --vibrations): -d ln c / d(1/kT)
+                dT = 2.0
+                c1, c2 = solve_at(x, T - dT, p)[2], solve_at(x, T + dT, p)[2]
+                b1, b2 = 1.0 / (KB_EV * (T - dT)), 1.0 / (KB_EV * (T + dT))
+                ee = {d: -(math.log(c2[d]) - math.log(c1[d])) / (b2 - b1) for d in order}
                 line = f"   {x:.4f} " + " ".join(f"{c[d]:12.4e}" for d in order) + "  " + " ".join(f"{ee[d]:9.4f}" for d in order)
                 if have_vol:  # V_eff = -kT d ln c / dp by central differences
                     dp = 0.05
-                    _, _, cp = model0.at_pressure(p + dp, omega0, vol).solve(x, T)
-                    _, _, cm = model0.at_pressure(p - dp, omega0, vol).solve(x, T)
+                    cp, cm = solve_at(x, T, p + dp)[2], solve_at(x, T, p - dp)[2]
                     kt = KB_EV * T
                     veff = {d: -kt * (math.log(cp[d]) - math.log(cm[d])) / (2 * dp * GPA_A3_EV) / (omega0 / 2.0) for d in order}
                     line += "  " + " ".join(f"{veff[d]:8.3f}" for d in order)

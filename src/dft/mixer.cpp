@@ -26,8 +26,17 @@ std::vector<double> Mixer::mix(const std::vector<double>& x_in, const std::vecto
       dx[i] = x_in[i] - x_prev_[i];
       dr[i] = r[i] - r_prev_[i];
     }
-    dx_.push_back(std::move(dx));
-    dr_.push_back(std::move(dr));
+    // A secant pair is only meaningful if the input actually moved: the step must be above rounding noise
+    // and not negligible against the residual change it is supposed to explain. (With an iterative
+    // eigensolver the residual can change at fixed input, e.g. right after a restart; such a pair would
+    // tell the extrapolation that the residual can be removed without changing the density.)
+    std::vector<double> pdr(n);
+    for (size_t i = 0; i < n; ++i) pdr[i] = precond_[i] * dr[i];
+    const double ndx = dot(dx, dx), ndr = dot(pdr, pdr), nx = dot(x_in, x_in);
+    if (ndx > 1e-24 * nx && ndx > 1e-6 * ndr) {
+      dx_.push_back(std::move(dx));
+      dr_.push_back(std::move(dr));
+    }
     if (static_cast<int>(dx_.size()) > history_) {
       dx_.erase(dx_.begin());
       dr_.erase(dr_.begin());
@@ -62,9 +71,12 @@ std::vector<double> Mixer::mix(const std::vector<double>& x_in, const std::vecto
       A(i, i) += 1e-13;
     }
     ok = ok && solve_real(A, b);
+    // Coefficients of the scaled problem are O(1) for a meaningful history. Huge values mean that the
+    // residual differences are dominated by numerical noise (residual at its floor): extrapolating with
+    // them would amplify rounding errors, so the oldest vectors are dropped instead.
     for (int i = 0; i < m; ++i) {
+      if (!std::isfinite(b[i]) || std::abs(b[i]) > 1e3) ok = false;
       b[i] *= scale[i];
-      if (!std::isfinite(b[i])) ok = false;
     }
     if (ok) {
       gamma = b;

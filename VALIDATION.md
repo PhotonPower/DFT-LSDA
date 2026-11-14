@@ -197,6 +197,24 @@ Dichte G-Kugel (`dense_factor`, bei ecut = 25 Ha): Faktor 4 → 16 ändert die E
   Tripeldefekts = V_triple/3; relaxierte Zellen und der Weg über Restdruck + Kompressionsmodul liefern
   identische Konzentrationen und Volumina.
 
+## 7c. Phononen und Schwingungsentropie
+
+* **Symmetriereduktion**: tetragonale Zelle mit zwei äquivalenten Al-Atomen – 6 Auslenkungen mit Symmetrie
+  gegen 12 ohne: optische Frequenzen 7.137 / 7.367 / 7.367 THz gegen 7.137 / 7.364 / 7.365 THz. Die Abweichung
+  (3e-3 THz) ist das Kraftrauschen der Rechnung ohne Symmetrie (dort Asymmetrie der Kraftkonstanten 2e-5,
+  mit Symmetrie 2e-19 Ha/Bohr²).
+* **Kubisches NiAl** (Regressionstest): drei akustische Moden bei null, optische Mode (8.71 THz bei 15 Ha,
+  3×3×3 k) dreifach entartet bis auf das Kraftrauschen der drei unabhängigen Auslenkungsrichtungen (3e-3 THz).
+* **Thermodynamik-Werkzeug** mit `--vibrations` (synthetische Einstein-Spektren): Schwingungsbeitrag und
+  Bildungsentropie von Tripeldefekt und Schottky-Paar stimmen mit der analytischen Rechnung überein
+  (−1.3817 eV / 15.544 k_B bzw. −0.6819 eV / 7.613 k_B bei 1000 K).
+* Der Workflow mit `PHONONS=1` ist nur als Durchlauf mit Minimalzellen getestet; Phononen echter
+  Defektzellen wurden **nicht** gerechnet.
+
+Dabei behobene Schwäche der SCF-Schleife: Residuenänderungen bei unveränderter Eingangsdichte (z. B. direkt
+nach einem Neustart, wenn der Eigenlöser nur die Bänder verfeinert) gehen nicht mehr in die Pulay-Historie
+ein, und die schärfste Eigenlöser-Toleranz richtet sich nach `scf_tol`.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

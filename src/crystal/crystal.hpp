@@ -9,6 +9,7 @@ namespace lsda {
 struct Species {
   std::string name;   // label used in the input (e.g. "Ni", "Fe1")
   std::string file;   // PAW dataset
+  double mass = 0;    // atomic mass (amu) for phonons; 0: standard atomic weight of the element
   PawSetup setup;
 };
 

@@ -73,7 +73,7 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad), `phonons` (Γ-Phononen der Zelle) |
 | `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
 | `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
@@ -104,6 +104,7 @@ end
 | `paw_ntheta` | 7 | Winkelquadratur der On-site-XC-Korrektur (2n² Punkte) |
 | `relax_steps`, `force_tol`, `max_step` | 50, 5e-4 Ha/bohr, 0.3 bohr | Relaxation (`force_tol`, `max_step` gelten auch für NEB) |
 | `dos`, `dos_width`, `dos_points` | `false`, Verschmierungsbreite, 2001 | Zustandsdichte nach dem letzten SCF in `<prefix>.dos`: gesamt und projiziert auf die PAW-Kugeln (Atom, l, Spin); Gauß-Breite in Ha |
+| `displacement` | 0.02 bohr | Auslenkung für `task = phonons` (zentrale Differenzen) |
 | `neb_images`, `neb_spring`, `neb_climb`, `neb_steps` | 5, 0.1 Ha/bohr², `true`, 200 | NEB: Zwischenbilder, Federkonstante, Climbing Image, maximale Schritte |
 
 ## Defektbildungsenergien in B2-Verbindungen
@@ -157,6 +158,22 @@ Es werden nur Symmetrieoperationen benutzt, die beide Endzustände gemeinsam hab
 und `max_seconds` lässt sich auch ein NEB-Lauf in Zeitscheiben rechnen. Sitzt ein Bild per Symmetrie
 auf einem Energiemaximum (z. B. das mittlere Bild eines symmetrischen, geraden Pfads), eine gerade Zahl
 von Bildern wählen.
+
+## Phononen und Schwingungsentropie
+
+`task = phonons` berechnet die harmonischen Γ-Punkt-Schwingungen der angegebenen (Super-)Zelle aus finiten
+Auslenkungen. Ausgelenkt werden nur symmetrie-inäquivalente Atome (je 6 Kraftrechnungen); die übrigen
+Kraftkonstanten folgen aus der Symmetrie. Akustische Summenregel und Symmetrie der Kraftkonstantenmatrix
+werden erzwungen, die Verletzung vorher wird ausgegeben. Ergebnis: `<prefix>.phonons.json` mit den
+Frequenzen (imaginäre als negative Zahlen). Fertige Auslenkungen stehen in `<prefix>.phonons.forces` und
+werden bei `restart = true` wiederverwendet; die Struktur kommt dann aus dem Checkpoint der Relaxation.
+Massen: Standard-Atomgewichte, im `species`-Block als dritte Spalte überschreibbar.
+
+Für Defekte: `PHONONS=1 ./run_defects.sh …` rechnet die Phononen aller fünf Superzellen und ruft die
+Auswertung mit `--vibrations` auf. Die harmonische freie Energie der Γ-Moden jeder Superzelle geht dann in
+alle Energien ein; ausgegeben werden zusätzlich die Schwingungsbeiträge und Bildungsentropien der
+zusammensetzungserhaltenden Reaktionen. Voraussetzung sind gut relaxierte Strukturen und scharf
+konvergierte Kräfte (`scf_tol = 1e-11`), sonst entstehen imaginäre Moden.
 
 ## Zustandsdichte
 
@@ -224,7 +241,7 @@ src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
-              Relaxation, NEB
+              Relaxation, NEB, Phononen
 src/io        Eingabe, JSON-Ausgabe
 tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik
 tests         Unit- und Regressionstests
@@ -247,7 +264,8 @@ tests         Unit- und Regressionstests
   Basis und enthält nicht die Pulay-Spannung.
 * Nach einem Neustart einer Relaxation beginnt die BFGS-Hesse-Matrix neu (Positionen, Dichte und Wellenfunktionen bleiben erhalten).
 * Parallelisierung nur über Threads (OpenMP + Thread-BLAS).
-* Die Defekt-Thermodynamik berücksichtigt nur Konfigurationsentropie (keine Schwingungsentropie).
+* Schwingungsentropie nur harmonisch und nur aus den Γ-Moden der Superzellen (keine Phononendispersion,
+  keine thermische Ausdehnung).
 
 ## Lizenz und Datensätze
 

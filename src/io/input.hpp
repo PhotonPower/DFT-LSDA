@@ -5,12 +5,13 @@
 #include "crystal/crystal.hpp"
 #include "dft/calculation.hpp"
 #include "dft/neb.hpp"
+#include "dft/phonons.hpp"
 #include "dft/relax.hpp"
 
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb | phonons
   bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
   bool dos = false;          // write <prefix>.dos after the final SCF
@@ -22,6 +23,7 @@ struct Input {
   RelaxParams relax;
   CellRelaxParams cell;
   NebParams neb;
+  PhononParams phonons;
   std::vector<Vec3> frac_final;  // second end point of a NEB path (block atoms_final)
 };
 

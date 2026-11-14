@@ -943,7 +943,9 @@ bool Calculation::scf() {
     n_scf_ = iter;
     const double t_iter = wall_time();
     // eigensolver tolerance follows the density residual
-    double tol = std::clamp(p_.eig_tol_factor * std::sqrt(dr2 / std::max(1.0, nelec_)), p_.eig_tol, p_.eig_tol_max);
+    // the tightest eigensolver tolerance must allow the requested SCF accuracy to be reached
+    const double eig_floor = std::min(p_.eig_tol, 0.3 * p_.eig_tol_factor * std::sqrt(p_.scf_tol / std::max(1.0, nelec_)));
+    double tol = std::clamp(p_.eig_tol_factor * std::sqrt(dr2 / std::max(1.0, nelec_)), eig_floor, p_.eig_tol_max);
     int eig_iters = first_solve_ ? p_.eig_max_iter_first : p_.eig_max_iter;
     if (first_solve_ && restarted_) {  // the density is already (nearly) converged: bands first
       tol = std::min(tol, 1e-5);
@@ -1196,6 +1198,17 @@ bool Calculation::adopt_state(Calculation&& o) {
   have_density_ = true;
   first_solve_ = o.first_solve_;
   proj_valid_ = false;
+  mixer_.reset();
+  return true;
+}
+
+bool Calculation::adopt_density(const Calculation& o) {
+  if (o.nspin_ != nspin_ || o.gs_.ng != gs_.ng || o.gs_.m != gs_.m || o.c_.natoms() != c_.natoms() || !o.have_density_) return false;
+  for (int a = 0; a < c_.natoms(); ++a)
+    if (o.c_.setup(a).ni != c_.setup(a).ni) return false;
+  rho_ = o.rho_;
+  D_ = o.D_;
+  have_density_ = true;
   mixer_.reset();
   return true;
 }

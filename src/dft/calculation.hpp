@@ -79,6 +79,8 @@ class Calculation {
   // layout (same reference lattice, k-points and bands), e.g. after a small change of the cell.
   // Returns false (and leaves this object untouched) if the layouts differ.
   bool adopt_state(Calculation&& other);
+  // Start density and density matrices from another calculation of the same cell (any k-points/symmetry).
+  bool adopt_density(const Calculation& other);
 
   // Checkpoint (atomic positions, pseudo density, PAW density matrices and optionally wavefunctions)
   // for restarting SCF runs and relaxations. load_checkpoint returns false if the file is missing or incompatible.

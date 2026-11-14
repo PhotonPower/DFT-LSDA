@@ -1,4 +1,5 @@
 // lsda - plane-wave PAW density-functional code (local spin density approximation)
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <memory>
@@ -37,6 +38,43 @@ int main(int argc, char** argv) {
       logf("    %-4s Z = %-4g valence = %-4g r_paw = %.3f bohr  projectors = %-2d  %s\n", s.name.c_str(), s.setup.Z,
            s.setup.n_valence, s.setup.r_paw, s.setup.ni, s.file.c_str());
     const std::string chk = inp.prefix + ".chk", json = inp.prefix + ".json";
+    bool restart_positions = false;
+    if (inp.restart && inp.task != "neb") {  // structure of the last checkpoint
+      std::vector<Vec3> frac;
+      Mat3 lattice{};
+      restart_positions = Calculation::read_checkpoint_structure(chk, inp.crystal.natoms(), frac, lattice);
+      if (restart_positions) {
+        for (int a = 0; a < inp.crystal.natoms(); ++a) inp.crystal.atoms[a].frac = frac[a];
+        // continue with the last cell of a cell relaxation; phonons use the relaxed cell of the checkpoint
+        if (inp.task == "cellrelax" || inp.task == "phonons") inp.crystal.set_lattice(lattice);
+      }
+    }
+    if (inp.task == "phonons") {
+      std::vector<double> masses;
+      for (const Atom& a : inp.crystal.atoms) {
+        const Species& sp = inp.crystal.species[a.species];
+        masses.push_back(sp.mass > 0.0 ? sp.mass : atomic_mass(static_cast<int>(std::lround(sp.setup.Z))));
+      }
+      const PhononResult r = run_phonons(inp.crystal, inp.params, inp.phonons, masses);
+      if (r.stopped) {
+        logf("\n  Stopped by the wall-time limit; rerun with 'restart = true' (completed displacements are kept).\n");
+        return 4;
+      }
+      logf("\n  Force constants: acoustic sum rule violated by %.2e, asymmetry %.2e Ha/bohr^2 (both removed)\n", r.asr_violation, r.asymmetry);
+      logf("\n  Gamma-point phonons of the cell\n   mode     THz        cm^-1       meV\n");
+      int imaginary = 0;
+      for (size_t i = 0; i < r.frequency_thz.size(); ++i) {
+        const double nu = r.frequency_thz[i];
+        logf("  %5zu %10.4f %10.3f %10.4f%s\n", i + 1, nu, nu * 33.35640951982, nu * 4.135667696, nu < -0.05 ? "   imaginary" : "");
+        if (nu < -0.05) ++imaginary;
+      }
+      if (imaginary > 0) logf("  WARNING: %d imaginary modes (structure not at a minimum, or numerical noise)\n", imaginary);
+      write_phonon_results(inp.prefix + ".phonons.json", inp.crystal, masses, r);
+      logf("\n  Frequencies written to %s.phonons.json\n", inp.prefix.c_str());
+      print_timings();
+      logf("\n  Total wall time: %.1f s\n", wall_time());
+      return 0;
+    }
     if (inp.task == "neb") {
       const NebResult r = run_neb(inp.crystal, inp.frac_final, inp.params, inp.neb);
       if (r.stopped) {
@@ -55,16 +93,6 @@ int main(int argc, char** argv) {
       print_timings();
       logf("\n  Total wall time: %.1f s\n", wall_time());
       return r.converged ? 0 : 3;
-    }
-    bool restart_positions = false;
-    if (inp.restart) {
-      std::vector<Vec3> frac;
-      Mat3 lattice{};
-      restart_positions = Calculation::read_checkpoint_structure(chk, inp.crystal.natoms(), frac, lattice);
-      if (restart_positions) {
-        for (int a = 0; a < inp.crystal.natoms(); ++a) inp.crystal.atoms[a].frac = frac[a];
-        if (inp.task == "cellrelax") inp.crystal.set_lattice(lattice);  // continue with the last cell
-      }
     }
     auto calc_ptr = std::make_unique<Calculation>(std::move(inp.crystal), inp.params);
     if (inp.restart) {

@@ -157,9 +157,10 @@ Input read_input(const std::string& path) {
   take("neb_spring", [&](const std::string& v) { inp.neb.spring = to_double(v, "neb_spring"); });
   take("neb_climb", [&](const std::string& v) { inp.neb.climb = to_bool(v, "neb_climb"); });
   take("neb_steps", [&](const std::string& v) { inp.neb.max_steps = static_cast<int>(to_double(v, "neb_steps")); });
+  take("displacement", [&](const std::string& v) { inp.phonons.displacement = to_double(v, "displacement"); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||
-                 inp.task == "cellrelax" || inp.task == "neb",
-             "input: task must be scf, forces, stress, relax, cellrelax or neb");
+                 inp.task == "cellrelax" || inp.task == "neb" || inp.task == "phonons",
+             "input: task must be scf, forces, stress, relax, cellrelax, neb or phonons");
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff
   if (inp.task == "cellrelax" && !smooth_given) p.ecut_smooth = 0.5;
@@ -193,9 +194,10 @@ Input read_input(const std::string& path) {
   LSDA_CHECK(blocks.count("species") && !blocks["species"].empty(), "input: block 'species' is missing");
   for (const std::string& l : blocks["species"]) {
     const auto t = split(l);
-    LSDA_CHECK(t.size() == 2, "input: species line must be '<label> <PAW dataset file>'");
+    LSDA_CHECK(t.size() == 2 || t.size() == 3, "input: species line must be '<label> <PAW dataset file> [mass in amu]'");
     Species sp;
     sp.name = t[0];
+    if (t.size() == 3) sp.mass = to_double(t[2], "species mass");
     sp.file = t[1][0] == '/' ? t[1] : pseudo_dir + "/" + t[1];
     sp.setup = PawSetup::load(sp.file, p.paw_ntheta);
     inp.crystal.species.push_back(std::move(sp));
@@ -240,6 +242,8 @@ Input read_input(const std::string& path) {
   LSDA_CHECK(inp.task != "neb" || !inp.frac_final.empty(), "input: task = neb needs the block 'atoms_final'");
   inp.neb.force_tol = inp.relax.force_tol;
   inp.neb.max_step = inp.relax.max_step;
+  inp.phonons.prefix = inp.prefix;
+  inp.phonons.restart = inp.restart;
   inp.neb.prefix = inp.prefix;
   inp.neb.restart = inp.restart;
   for (const auto& [name, lines] : blocks)
