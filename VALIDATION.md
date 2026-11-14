@@ -269,6 +269,21 @@ gerechnet.
 * fcc-Al (1 Atom, 10 Ha): Tetraeder 6³ mit und ohne Symmetrie −241.9205964884 / −241.9205964897 Ha;
   Tetraeder 10³: −241.91900, cold 10³: −241.91872, cold 16³: −241.91951 Ha.
 
+## 7h. Phononendispersion und quasiharmonische Näherung
+
+* **Dispersion**, fcc-Al, 2×2×2-Superzelle der primitiven Zelle (8 Atome, 10 Ha, k-Gitter 4×4×4 bezogen auf
+  die primitive Zelle): Die Frequenzen an den kommensurablen Punkten (Γ, X, L) stimmen mit den Γ-Moden der
+  Superzelle auf 2e-5 THz überein; Entartungen korrekt. Werte: X 3.99 (2×) / 9.22 THz, L 4.06 (2×) / 9.39 THz.
+  Die longitudinalen Moden und der L-Punkt liegen im üblichen Bereich; die transversale Mode bei X ist
+  gegenüber den erwarteten knapp 6 THz zu weich. Ich führe das auf das grobe k-Gitter zurück (dieselbe
+  Empfindlichkeit wie bei den Scherkonstanten), habe es aber **nicht** mit einem dichteren Gitter überprüft.
+* **Quasiharmonisch** (`tools/qha.py`, synthetisches Einstein-Grüneisen-Modell): Ausdehnungskoeffizient bei
+  300 K 55.0e-6/K gegen 54.7e-6/K aus γ·C_V/(B·V).
+
+Dabei behoben: Das SCF-Abbruchkriterium zählte die Residuen praktisch unbesetzter Bänder mit; eine
+ausgelenkte 8-Atom-Al-Zelle lief deshalb über 70 statt 28 Schritte, obwohl die Dichte längst konvergiert
+war. Die Statistik umfasst jetzt nur Bänder mit Besetzung > 1e-6.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

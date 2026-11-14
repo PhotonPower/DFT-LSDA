@@ -29,6 +29,10 @@ struct Input {
   CellRelaxParams cell;
   NebParams neb;
   PhononParams phonons;
+  // task = phonons with phonon_supercell: the input cell is primitive; force constants from the supercell,
+  // dispersion along kpath and frequencies on a q-mesh (vibrational thermodynamics, quasi-harmonic approximation)
+  int phonon_supercell[3] = {1, 1, 1};
+  int phonon_qgrid[3] = {8, 8, 8};
   double strain = 0.005;     // strain amplitude for task = elastic
   std::vector<Vec3> frac_final;  // second end point of a NEB path (block atoms_final)
 };

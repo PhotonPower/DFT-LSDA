@@ -688,15 +688,16 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
           lcao_start_ok_ = false;
         add_time("  start wavefunctions", wall_time() - t0);
       }
-      // All bands are iterated; the convergence statistics cover the occupied bands plus a small buffer
-      // (the highest bands converge slowly and do not enter the density).
+      // All bands are iterated; the convergence statistics cover the bands that carry charge. Bands with
+      // negligible occupation converge slowly and do not enter the density: counting them would keep the
+      // SCF loop running long after the density has converged.
       const std::vector<double> tb(nbands_, tol);
       int n_required = nbands_ - std::max(2, nbands_ / 8);
       if (have_occ_) {
         int last_occ = -1;
         for (int n = 0; n < nbands_; ++n)
-          if (std::abs(occ_.f[ks][n]) > 1e-8 * deg) last_occ = n;
-        n_required = std::min(nbands_, last_occ + 3);
+          if (std::abs(occ_.f[ks][n]) > 1e-6 * deg) last_occ = n;
+        n_required = std::min(nbands_, last_occ + 1);
       }
       const int iters = first_solve_ && !lcao_start_ok_ ? 5 * max_iter : max_iter;
       const EigensolverResult r = p_.eigensolver == "lobpcg"
@@ -1337,6 +1338,9 @@ bool Calculation::adopt_density(const Calculation& o) {
   rho_ = o.rho_;
   D_ = o.D_;
   have_density_ = true;
+  // the adopted density is (nearly) self-consistent while the wavefunctions start from scratch: converge
+  // the bands thoroughly in the first step, otherwise eigensolver noise dominates the first residuals
+  restarted_ = true;
   mixer_.reset();
   return true;
 }

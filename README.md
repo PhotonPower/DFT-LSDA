@@ -108,6 +108,7 @@ end
 | `write_density` | `false` | glatte Elektronendichte (und Magnetisierung) im Cube-Format: `<prefix>.rho.cube`, `<prefix>.mag.cube` |
 | `kpath_points` | 20 | Punkte je Segment des k-Pfads bei `task = bands` |
 | `displacement` | 0.02 bohr | Auslenkung für `task = phonons` (zentrale Differenzen) |
+| `phonon_supercell`, `phonon_qgrid` | `1 1 1`, `8 8 8` | Superzelle der (primitiven) Eingabezelle für Kraftkonstanten und Dispersion; q-Gitter für `<prefix>.phmesh.json` |
 | `strain` | 0.005 | Dehnungsamplitude für `task = elastic` |
 | `neb_images`, `neb_spring`, `neb_climb`, `neb_steps` | 5, 0.1 Ha/bohr², `true`, 200 | NEB: Zwischenbilder, Federkonstante, Climbing Image, maximale Schritte |
 
@@ -200,6 +201,14 @@ werden erzwungen, die Verletzung vorher wird ausgegeben. Ergebnis: `<prefix>.pho
 Frequenzen (imaginäre als negative Zahlen). Fertige Auslenkungen stehen in `<prefix>.phonons.forces` und
 werden bei `restart = true` wiederverwendet; die Struktur kommt dann aus dem Checkpoint der Relaxation.
 Massen: Standard-Atomgewichte, im `species`-Block als dritte Spalte überschreibbar.
+
+**Dispersion und quasiharmonische Näherung.** Mit `phonon_supercell = n n n` ist die Eingabezelle die
+primitive Zelle; die Kraftkonstanten kommen aus der Superzelle (das k-Gitter wird entsprechend
+verkleinert). Mit einem `kpath`-Block entsteht `<prefix>.phdisp` (Frequenzen entlang des Pfads; exakt an
+den mit der Superzelle kommensurablen Wellenvektoren, dazwischen Fourier-interpoliert), außerdem
+`<prefix>.phmesh.json` mit den Frequenzen auf einem q-Gitter sowie Energie und Volumen pro primitiver
+Zelle. `tools/qha.py vol1.phmesh.json vol2.phmesh.json …` (mindestens vier Volumina) liefert daraus
+V₀(T), B₀(T) und den thermischen Ausdehnungskoeffizienten.
 
 Für Defekte: `PHONONS=1 ./run_defects.sh …` rechnet die Phononen aller fünf Superzellen und ruft die
 Auswertung mit `--vibrations` auf. Die harmonische freie Energie der Γ-Moden jeder Superzelle geht dann in
@@ -313,7 +322,7 @@ src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
               Relaxation, NEB, Phononen, elastische Konstanten
 src/io        Eingabe, JSON-Ausgabe
-tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik, Größen-Extrapolation
+tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik, Größen-Extrapolation, quasiharmonische Näherung
 tests         Unit- und Regressionstests
 ```
 
@@ -337,8 +346,8 @@ tests         Unit- und Regressionstests
 * Nach einem Neustart einer Relaxation beginnt die BFGS-Hesse-Matrix neu (Positionen, Dichte und Wellenfunktionen bleiben erhalten).
 * MPI nur über k-Punkte (repliziertes Datenmodell) und bisher nur mit der Attrappe getestet, nicht mit
   einer echten MPI-Bibliothek.
-* Schwingungsentropie nur harmonisch und nur aus den Γ-Moden der Superzellen (keine Phononendispersion,
-  keine thermische Ausdehnung).
+* Schwingungsentropie der Defekte nur harmonisch und aus den Γ-Moden der Superzellen (ohne thermische
+  Ausdehnung der Defektzellen).
 
 ## Lizenz und Datensätze
 

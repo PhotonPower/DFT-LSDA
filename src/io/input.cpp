@@ -161,6 +161,8 @@ Input read_input(const std::string& path) {
   take("neb_spring", [&](const std::string& v) { inp.neb.spring = to_double(v, "neb_spring"); });
   take("neb_climb", [&](const std::string& v) { inp.neb.climb = to_bool(v, "neb_climb"); });
   take("neb_steps", [&](const std::string& v) { inp.neb.max_steps = static_cast<int>(to_double(v, "neb_steps")); });
+  take("phonon_supercell", [&](const std::string& v) { ints3(v, "phonon_supercell", inp.phonon_supercell); });
+  take("phonon_qgrid", [&](const std::string& v) { ints3(v, "phonon_qgrid", inp.phonon_qgrid); });
   take("displacement", [&](const std::string& v) { inp.phonons.displacement = to_double(v, "displacement"); });
   take("strain", [&](const std::string& v) { inp.strain = to_double(v, "strain"); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||

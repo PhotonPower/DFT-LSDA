@@ -37,6 +37,7 @@ PhononResult run_phonons(const Crystal& crystal, const Params& params, const Pho
     res.stopped = true;
     return res;
   }
+  res.energy = ref.energies().free;
   for (const Vec3& f : ref.forces()) res.max_force_reference = std::max(res.max_force_reference, norm(f));
   const std::vector<SymOp> ops = ref.symmetry_ops();
   logf("\n  Phonons: reference structure has max |F| = %.6f Ha/bohr%s\n", res.max_force_reference,
@@ -174,6 +175,75 @@ PhononResult run_phonons(const Crystal& crystal, const Params& params, const Pho
   res.frequency_thz.resize(n3);
   for (int i = 0; i < n3; ++i) res.frequency_thz[i] = (lam[i] < 0 ? -1.0 : 1.0) * std::sqrt(std::abs(lam[i])) * ha_to_thz;
   return res;
+}
+
+Crystal make_supercell(const Crystal& prim, const int n[3]) {
+  LSDA_CHECK(n[0] >= 1 && n[1] >= 1 && n[2] >= 1, "supercell dimensions must be positive");
+  Crystal c = prim;
+  Mat3 a{};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) a[i][j] = n[i] * prim.A[i][j];
+  c.set_lattice(a);
+  c.atoms.clear();
+  c.sym_constraints.clear();
+  for (int i = 0; i < n[0]; ++i)
+    for (int j = 0; j < n[1]; ++j)
+      for (int k = 0; k < n[2]; ++k)
+        for (const Atom& at : prim.atoms) {
+          Atom b = at;
+          b.frac = {(at.frac[0] + i) / n[0], (at.frac[1] + j) / n[1], (at.frac[2] + k) / n[2]};
+          c.atoms.push_back(b);
+        }
+  return c;
+}
+
+std::vector<double> phonon_frequencies(const Crystal& prim, const Crystal& super, const RMatrix& phi,
+                                       const std::vector<double>& masses_prim, const Vec3& q) {
+  const int np = prim.natoms(), ns = super.natoms(), n3 = 3 * np;
+  LSDA_CHECK(ns % np == 0 && phi.rows() == 3 * ns, "phonon_frequencies: supercell does not match the primitive cell");
+  Vec3 qc{};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) qc[j] += q[i] * prim.B[i][j];
+  CMatrix dyn(n3, n3);
+  const double amu = 1822.888486209;
+  for (int a = 0; a < np; ++a) {
+    const Vec3 ra = super.atom_cart(a);
+    for (int bs = 0; bs < ns; ++bs) {
+      const int b = bs % np;
+      const Vec3 rb = super.atom_cart(bs);
+      // nearest periodic images of the supercell atom
+      double dmin = 1e300;
+      std::vector<Vec3> images;
+      for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j)
+          for (int k = -1; k <= 1; ++k) {
+            Vec3 d;
+            for (int x = 0; x < 3; ++x) d[x] = rb[x] - ra[x] + i * super.A[0][x] + j * super.A[1][x] + k * super.A[2][x];
+            const double len = norm(d);
+            if (len < dmin - 1e-6) {
+              dmin = len;
+              images.clear();
+            }
+            if (len < dmin + 1e-6) images.push_back(d);
+          }
+      cplx phase = 0.0;
+      for (const Vec3& d : images) phase += std::exp(cplx(0.0, dot(qc, d)));
+      phase /= static_cast<double>(images.size());
+      const double f = 1.0 / (amu * std::sqrt(masses_prim[a] * masses_prim[b]));
+      for (int x = 0; x < 3; ++x)
+        for (int y = 0; y < 3; ++y) dyn(3 * a + x, 3 * b + y) += f * phi(3 * bs + y, 3 * a + x) * phase;
+    }
+  }
+  for (int i = 0; i < n3; ++i)  // Hermitian part (removes rounding asymmetry)
+    for (int j = 0; j <= i; ++j) {
+      const cplx v = 0.5 * (dyn(i, j) + std::conj(dyn(j, i)));
+      dyn(i, j) = v;
+      dyn(j, i) = std::conj(v);
+    }
+  std::vector<double> lam;
+  eigh(dyn, lam);
+  for (double& v : lam) v = (v < 0 ? -1.0 : 1.0) * std::sqrt(std::abs(v)) * 6579.683920502;
+  return lam;
 }
 
 void write_phonon_results(const std::string& path, const Crystal& c, const std::vector<double>& masses, const PhononResult& r) {

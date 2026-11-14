@@ -21,7 +21,20 @@ struct PhononResult {
   double max_force_reference = 0;       // residual force of the undisplaced structure
   std::vector<double> frequency_thz;    // 3N modes, ascending; imaginary modes as negative numbers
   RMatrix force_constants;              // 3N x 3N, Ha/bohr^2
+  double energy = 0;                    // free energy of the undisplaced cell (Ha)
 };
+
+// n0 x n1 x n2 supercell of a primitive cell; the atoms of the first cell come first, atom a of cell c has
+// the index c * natoms + a.
+Crystal make_supercell(const Crystal& prim, const int n[3]);
+
+// Phonon frequencies (THz, imaginary as negative) at the wave vector q (fractional coordinates of the
+// primitive reciprocal lattice) from the force constants of a supercell built with make_supercell:
+//   D_ab(q) = (M_a M_b)^{-1/2} sum_{b' ~ b} Phi(b', a) exp(i q.(R_b' - R_a)),
+// where periodic images at equal (minimal) distance share the contribution (Wigner-Seitz convention).
+// Exact at wave vectors commensurate with the supercell, a Fourier interpolation in between.
+std::vector<double> phonon_frequencies(const Crystal& prim, const Crystal& super, const RMatrix& force_constants,
+                                       const std::vector<double>& masses_prim, const Vec3& q);
 
 // standard atomic weight (amu) of element Z; fails for unknown elements
 double atomic_mass(int Z);

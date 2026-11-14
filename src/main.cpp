@@ -1,4 +1,5 @@
 // lsda - plane-wave PAW density-functional code (local spin density approximation)
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -81,27 +82,100 @@ static int run(int argc, char** argv) {
       return 0;
     }
     if (inp.task == "phonons") {
-      std::vector<double> masses;
-      for (const Atom& a : inp.crystal.atoms) {
-        const Species& sp = inp.crystal.species[a.species];
-        masses.push_back(sp.mass > 0.0 ? sp.mass : atomic_mass(static_cast<int>(std::lround(sp.setup.Z))));
+      const int* nsc = inp.phonon_supercell;
+      const bool supercell = nsc[0] * nsc[1] * nsc[2] > 1;
+      const Crystal prim = inp.crystal;
+      Crystal cell = prim;
+      Params params = inp.params;
+      if (supercell) {  // force constants from a supercell of the (primitive) input cell
+        cell = make_supercell(prim, nsc);
+        for (int d = 0; d < 3; ++d) params.kgrid[d] = std::max(1, (inp.params.kgrid[d] + nsc[d] - 1) / nsc[d]);
+        logf("\n  Phonons: %d x %d x %d supercell with %d atoms, k-point grid %d x %d x %d\n", nsc[0], nsc[1], nsc[2], cell.natoms(),
+             params.kgrid[0], params.kgrid[1], params.kgrid[2]);
       }
-      const PhononResult r = run_phonons(inp.crystal, inp.params, inp.phonons, masses);
+      std::vector<double> masses, masses_prim;
+      for (const Atom& a : prim.atoms) {
+        const Species& sp = prim.species[a.species];
+        masses_prim.push_back(sp.mass > 0.0 ? sp.mass : atomic_mass(static_cast<int>(std::lround(sp.setup.Z))));
+      }
+      for (int i = 0; i < cell.natoms(); ++i) masses.push_back(masses_prim[i % prim.natoms()]);
+      const PhononResult r = run_phonons(cell, params, inp.phonons, masses);
       if (r.stopped) {
         logf("\n  Stopped by the wall-time limit; rerun with 'restart = true' (completed displacements are kept).\n");
         return 4;
       }
       logf("\n  Force constants: acoustic sum rule violated by %.2e, asymmetry %.2e Ha/bohr^2 (both removed)\n", r.asr_violation, r.asymmetry);
-      logf("\n  Gamma-point phonons of the cell\n   mode     THz        cm^-1       meV\n");
+      logf("\n  Gamma-point phonons of the %scell\n   mode     THz        cm^-1       meV\n", supercell ? "super" : "");
       int imaginary = 0;
       for (size_t i = 0; i < r.frequency_thz.size(); ++i) {
         const double nu = r.frequency_thz[i];
-        logf("  %5zu %10.4f %10.3f %10.4f%s\n", i + 1, nu, nu * 33.35640951982, nu * 4.135667696, nu < -0.05 ? "   imaginary" : "");
+        if (r.frequency_thz.size() <= 60 || nu < -0.05)
+          logf("  %5zu %10.4f %10.3f %10.4f%s\n", i + 1, nu, nu * 33.35640951982, nu * 4.135667696, nu < -0.05 ? "   imaginary" : "");
         if (nu < -0.05) ++imaginary;
       }
       if (imaginary > 0) logf("  WARNING: %d imaginary modes (structure not at a minimum, or numerical noise)\n", imaginary);
-      write_phonon_results(inp.prefix + ".phonons.json", inp.crystal, masses, r);
+      write_phonon_results(inp.prefix + ".phonons.json", cell, masses, r);
       logf("\n  Frequencies written to %s.phonons.json\n", inp.prefix.c_str());
+      if (supercell && par::root()) {
+        // ---- dispersion along the path ---------------------------------------------------------------
+        if (inp.kpath.size() >= 2) {
+          const std::string df = inp.prefix + ".phdisp";
+          std::FILE* f = std::fopen(df.c_str(), "w");
+          LSDA_CHECK(f != nullptr, "cannot write '" + df + "'");
+          std::fprintf(f, "# phonon dispersion: path length (1/bohr), %d frequencies in THz (imaginary as negative)\n# special points:", 3 * prim.natoms());
+          double d = 0.0;
+          std::string ticks = strf("  %s = %.6f", inp.kpath[0].first.c_str(), 0.0);
+          std::vector<std::pair<double, Vec3>> pts;
+          for (size_t seg = 0; seg + 1 < inp.kpath.size(); ++seg) {
+            const Vec3 &q0 = inp.kpath[seg].second, &q1 = inp.kpath[seg + 1].second;
+            Vec3 dq{};
+            for (int j = 0; j < 3; ++j)
+              for (int i = 0; i < 3; ++i) dq[j] += (q1[i] - q0[i]) * prim.B[i][j];
+            const double len = norm(dq);
+            for (int i = (seg == 0 ? 0 : 1); i <= inp.kpath_points; ++i) {
+              const double t = static_cast<double>(i) / inp.kpath_points;
+              pts.push_back({d + t * len, Vec3{q0[0] + t * (q1[0] - q0[0]), q0[1] + t * (q1[1] - q0[1]), q0[2] + t * (q1[2] - q0[2])}});
+            }
+            d += len;
+            ticks += strf("  %s = %.6f", inp.kpath[seg + 1].first.c_str(), d);
+          }
+          std::fprintf(f, "%s\n", ticks.c_str());
+          for (const auto& [x, q] : pts) {
+            std::fprintf(f, "%10.6f", x);
+            for (double nu : phonon_frequencies(prim, cell, r.force_constants, masses_prim, q)) std::fprintf(f, " %10.5f", nu);
+            std::fprintf(f, "\n");
+          }
+          std::fclose(f);
+          logf("  Phonon dispersion (%zu q-points) written to %s\n", pts.size(), df.c_str());
+        }
+        // ---- frequencies on a q-mesh, energy and volume per primitive cell (for tools/qha.py) --------------
+        const int* nq = inp.phonon_qgrid;
+        const std::string mf = inp.prefix + ".phmesh.json";
+        std::FILE* f = std::fopen(mf.c_str(), "w");
+        LSDA_CHECK(f != nullptr, "cannot write '" + mf + "'");
+        const int ncell = nsc[0] * nsc[1] * nsc[2];
+        std::fprintf(f, "{\n  \"n_atoms\": %d,\n  \"volume\": %.10f,\n  \"free_energy\": %.12f,\n  \"qgrid\": [%d, %d, %d],\n", prim.natoms(),
+                     prim.volume, r.energy / ncell, nq[0], nq[1], nq[2]);
+        std::fprintf(f, "  \"comment\": \"per primitive cell; Hartree, bohr^3; one list of mode frequencies (THz) per q-point of the mesh\",\n");
+        std::fprintf(f, "  \"frequencies_THz\": [\n");
+        int n_imag = 0;
+        for (int i = 0; i < nq[0]; ++i)
+          for (int j = 0; j < nq[1]; ++j)
+            for (int k = 0; k < nq[2]; ++k) {
+              const Vec3 q{(i + 0.5) / nq[0], (j + 0.5) / nq[1], (k + 0.5) / nq[2]};  // shifted mesh avoids Gamma
+              const std::vector<double> nu = phonon_frequencies(prim, cell, r.force_constants, masses_prim, q);
+              std::fprintf(f, "    [");
+              for (size_t m = 0; m < nu.size(); ++m) {
+                std::fprintf(f, "%.6f%s", nu[m], m + 1 < nu.size() ? ", " : "]");
+                if (nu[m] < -0.05) ++n_imag;
+              }
+              std::fprintf(f, "%s\n", (i + 1 == nq[0] && j + 1 == nq[1] && k + 1 == nq[2]) ? "" : ",");
+            }
+        std::fprintf(f, "  ]\n}\n");
+        std::fclose(f);
+        logf("  Frequencies on a %d x %d x %d q-mesh written to %s%s\n", nq[0], nq[1], nq[2], mf.c_str(),
+             n_imag ? strf("  (WARNING: %d imaginary values)", n_imag).c_str() : "");
+      }
       print_timings();
       logf("\n  Total wall time: %.1f s\n", wall_time());
       return 0;
