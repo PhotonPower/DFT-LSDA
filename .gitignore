@@ -8,3 +8,7 @@ __pycache__/
 *.chk.tmp
 examples/defects/*Al_n*/
 !CMakePresets.json
+build-mpi/
+build-mpi-mock/
+*.phonons.forces
+*.neb.pos

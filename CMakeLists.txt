@@ -30,6 +30,7 @@ endif()
 # --- core library -----------------------------------------------------------
 add_library(lsdacore STATIC
   src/base/common.cpp
+  src/base/parallel.cpp
   src/base/linalg.cpp
   src/base/fft.cpp
   src/math/special.cpp
@@ -60,6 +61,20 @@ else()
   message(WARNING "OpenMP not found: building serial code")
 endif()
 target_compile_options(lsdacore PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# --- optional MPI parallelization over k-points ---------------------------------------
+option(LSDA_MPI "Parallelize over k-points with MPI" OFF)
+option(LSDA_MPI_MOCK "Compile the MPI code path against a single-process stand-in (testing only)" OFF)
+if(LSDA_MPI)
+  target_compile_definitions(lsdacore PUBLIC LSDA_USE_MPI OMPI_SKIP_MPICXX MPICH_SKIP_MPICXX)
+  if(LSDA_MPI_MOCK)
+    target_include_directories(lsdacore PUBLIC tests/mock_mpi)
+    message(WARNING "LSDA_MPI_MOCK: single-process MPI stand-in, for compile and logic tests only")
+  else()
+    find_package(MPI REQUIRED COMPONENTS CXX)
+    target_link_libraries(lsdacore PUBLIC MPI::MPI_CXX)
+  endif()
+endif()
 
 add_executable(lsda src/main.cpp)
 target_link_libraries(lsda PRIVATE lsdacore)

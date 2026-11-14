@@ -1,5 +1,7 @@
 #include "dft/phonons.hpp"
 
+#include "base/parallel.hpp"
+
 #include <cmath>
 #include <fstream>
 #include <map>
@@ -73,7 +75,7 @@ PhononResult run_phonons(const Crystal& crystal, const Params& params, const Pho
       if (ok) done[strf("%d %d %d", a, d, sg)] = f;
     }
     if (!done.empty()) logf("  Phonons: %zu displacements read from %s\n", done.size(), store.c_str());
-  } else {
+  } else if (par::root()) {
     std::ofstream(store, std::ios::trunc);
   }
   Params quiet = params;
@@ -103,11 +105,13 @@ PhononResult run_phonons(const Crystal& crystal, const Params& params, const Pho
           std::vector<double> flat(n3);
           for (int b = 0; b < nat; ++b)
             for (int k = 0; k < 3; ++k) flat[3 * b + k] = f[b][k];
-          std::ofstream out(store, std::ios::app);
-          out.precision(17);
-          out << a << " " << d << " " << sg << " " << pp.displacement;
-          for (double v : flat) out << " " << v;
-          out << "\n";
+          if (par::root()) {
+            std::ofstream out(store, std::ios::app);
+            out.precision(17);
+            out << a << " " << d << " " << sg << " " << pp.displacement;
+            for (double v : flat) out << " " << v;
+            out << "\n";
+          }
           it = done.emplace(key, flat).first;
           ++res.n_displacements;
           logf("  displacement atom %3d %c%c: %d SCF iterations\n", a + 1, sg == 0 ? '+' : '-', "xyz"[d], calc.n_scf_iterations());
@@ -173,6 +177,7 @@ PhononResult run_phonons(const Crystal& crystal, const Params& params, const Pho
 }
 
 void write_phonon_results(const std::string& path, const Crystal& c, const std::vector<double>& masses, const PhononResult& r) {
+  if (!par::root()) return;
   std::FILE* f = std::fopen(path.c_str(), "w");
   LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
   std::fprintf(f, "{\n  \"n_atoms\": %d,\n  \"volume\": %.10f,\n  \"asr_violation\": %.6e,\n  \"asymmetry\": %.6e,\n", c.natoms(), c.volume,

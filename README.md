@@ -200,6 +200,27 @@ MAX_SECONDS=300 ECUT=20 ./run_defects.sh Ni 2.840 2 "4 4 4"   # so oft aufrufen,
 Für eine einzelne Eingabe: `max_seconds = 300` und `restart = true` setzen und `lsda` wiederholt starten,
 bis der Exit-Code nicht mehr 4 ist.
 
+## MPI über k-Punkte
+
+```sh
+cmake -S . -B build-mpi -DLSDA_MPI=ON && cmake --build build-mpi     # benötigt eine MPI-Bibliothek
+export OMP_NUM_THREADS=4
+mpirun -np 8 build-mpi/lsda input.in                                  # 8 Prozesse × 4 Threads
+```
+
+Die k-Punkte werden auf die Prozesse verteilt (k-Punkt i gehört Prozess i mod N); jeder Prozess hält nur
+die Wellenfunktionen seiner k-Punkte, alles Übrige (Dichte, Potentiale, Dichtematrizen) ist repliziert.
+Sinnvoll sind höchstens so viele Prozesse wie irreduzible k-Punkte; der replizierte Anteil (Potential,
+On-site-Terme, Mischung) begrenzt die Skalierung. Ausgabe und Dateien schreibt nur Prozess 0;
+Checkpoints sind unabhängig von der Prozesszahl (Neustart mit anderer Prozesszahl möglich). Alle Aufgaben
+(SCF, Relaxation, Zellrelaxation, NEB, Phononen, DOS) laufen damit.
+
+**Teststand:** Auf dem Entwicklungsrechner gibt es keine MPI-Bibliothek. Geprüft ist der MPI-Zweig mit einer
+Attrappe (`tests/mock_mpi/mpi.h`, `-DLSDA_MPI_MOCK=ON`), die mehrere Prozesse per `fork` und Sockets
+emuliert (`LSDA_MOCK_NP=3 ./lsda input.in`). Mit einer echten MPI-Bibliothek ist der Code noch **nicht**
+gelaufen – beim ersten Einsatz bitte `tests/run_regression.py` einmal unter `mpirun` gegen die seriellen
+Referenzen laufen lassen (z. B. mit einem Wrapper-Skript, das `mpirun -np 2 lsda` aufruft).
+
 ## Rechnen auf einem Server
 
 ```sh
@@ -235,7 +256,7 @@ Siehe `VALIDATION.md` für die Zahlen. Kurzfassung der Prüfungen, die der Code 
 ## Aufbau des Quelltexts
 
 ```
-src/base      Typen, Timer, lineare Algebra (BLAS/LAPACK), FFT
+src/base      Typen, Timer, lineare Algebra (BLAS/LAPACK), FFT, MPI-Schicht, Dualzahlen
 src/math      Kugelflächenfunktionen, Gaunt-Koeffizienten, Bessel-Transformation, Radialgitter
 src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
@@ -252,7 +273,9 @@ tests         Unit- und Regressionstests
 * **Weitere Funktionale:** von `XCFunctional` ableiten (`evaluate` für lokale, `evaluate_gga` für
   gradientenkorrigierte Funktionale); Gitter- und On-site-Teil sind für beide Klassen vorhanden.
   Ableitungen lassen sich mit den Dualzahlen aus `base/dual.hpp` automatisch bilden.
-* **MPI über k-Punkte:** die Schleife in `Calculation::solve_bands` ist pro k-Punkt unabhängig.
+* **Parallelisierung:** alle MPI-Aufrufe liegen in `base/parallel.cpp`; k-Punkt-Schleifen prüfen
+  `par::owns(ik)`, Summen über k-Punkte laufen über `par::sum`. Eine Verteilung der Bänder oder der
+  FFT über Prozesse gibt es nicht.
 * **Spin-Bahn-Kopplung**, **GPU-FFT**: bisher nicht enthalten.
 * **Weitere Elemente:** jeder PAW-XML-Datensatz mit einem Radialgitter und `sinc`-, `gauss`- oder
   `exp`-Formfunktion (z. B. die gesamte JTH-Tabelle).
@@ -263,7 +286,8 @@ tests         Unit- und Regressionstests
   (bei 20 Ha ist P(V) für NiAl noch auf ~1 GPa rau). Ohne `ecut_smooth` gilt die Spannung für die feste
   Basis und enthält nicht die Pulay-Spannung.
 * Nach einem Neustart einer Relaxation beginnt die BFGS-Hesse-Matrix neu (Positionen, Dichte und Wellenfunktionen bleiben erhalten).
-* Parallelisierung nur über Threads (OpenMP + Thread-BLAS).
+* MPI nur über k-Punkte (repliziertes Datenmodell) und bisher nur mit der Attrappe getestet, nicht mit
+  einer echten MPI-Bibliothek.
 * Schwingungsentropie nur harmonisch und nur aus den Γ-Moden der Superzellen (keine Phononendispersion,
   keine thermische Ausdehnung).
 

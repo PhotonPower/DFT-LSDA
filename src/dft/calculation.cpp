@@ -7,6 +7,7 @@
 #include <limits>
 #include <random>
 
+#include "base/parallel.hpp"
 #include "dft/eigensolver.hpp"
 #include "dft/hamiltonian.hpp"
 #include "math/special.hpp"
@@ -210,16 +211,19 @@ void Calculation::init_wavefunctions() {
   psi_.resize(static_cast<size_t>(nk) * nspin_);
   proj_psi_.resize(psi_.size());
   eig_.assign(psi_.size(), std::vector<double>(nbands_, 0.0));
-  std::mt19937_64 rng(p_.seed);
   std::uniform_real_distribution<double> u(-0.5, 0.5);
-  for (int ik = 0; ik < nk; ++ik)
+  for (int ik = 0; ik < nk; ++ik) {
+    if (!par::owns(ik)) continue;  // wavefunctions live on the process that owns the k-point
     for (int s = 0; s < nspin_; ++s) {
-      CMatrix& x = psi_[static_cast<size_t>(ik) * nspin_ + s];
+      const size_t ks0 = static_cast<size_t>(ik) * nspin_ + s;
+      std::mt19937_64 rng(p_.seed + 7919 * ks0);  // independent of the number of processes
+      CMatrix& x = psi_[ks0];
       const PWBasis& b = basis_[ik];
       x.resize(b.npw, nbands_);
       for (int n = 0; n < nbands_; ++n)
         for (int ig = 0; ig < b.npw; ++ig) x(ig, n) = cplx(u(rng), u(rng)) / (1.0 + 2.0 * b.kin[ig]);
     }
+  }
   first_solve_ = true;
 }
 
@@ -649,6 +653,10 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
   not_converged = 0;
   const double deg = nspin_ == 1 ? 2.0 : 1.0;
   for (int ik = 0; ik < nk; ++ik) {
+    if (!par::owns(ik)) {  // eigenvalues of other processes arrive through the reduction below
+      for (int s = 0; s < nspin_; ++s) std::fill(eig_[static_cast<size_t>(ik) * nspin_ + s].begin(), eig_[static_cast<size_t>(ik) * nspin_ + s].end(), 0.0);
+      continue;
+    }
     const double tp = wall_time();
     const Projectors proj = make_projectors(c_, basis_[ik]);
     add_time("  projectors (k-point)", wall_time() - tp);
@@ -695,6 +703,16 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
     }
   }
   proj_valid_ = true;
+  if (par::size() > 1) {  // collect eigenvalues and statistics of all processes
+    std::vector<double> buf;
+    for (const auto& e : eig_) buf.insert(buf.end(), e.begin(), e.end());
+    par::sum(buf.data(), buf.size());
+    size_t pos = 0;
+    for (auto& e : eig_)
+      for (double& v : e) v = buf[pos++];
+    par::max(&max_residual, 1);
+    par::sum(&not_converged, 1);
+  }
 }
 
 // =====================================================================================
@@ -717,6 +735,7 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
   for (int s = 0; s < nspin_; ++s) {
     std::vector<double> rho_r(nc, 0.0);
     for (int ik = 0; ik < nk; ++ik) {
+      if (!par::owns(ik)) continue;
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
       const CMatrix& x = psi_[ks];
       const PWBasis& b = basis_[ik];
@@ -757,12 +776,23 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
         }
       }
     }
+    par::sum(rho_r.data(), nc);  // contributions of the k-points of all processes
     CVec work(nc);
     for (size_t i = 0; i < nc; ++i) work[i] = rho_r[i];
     fft_c_.forward(work.data());
     const double inv = 1.0 / static_cast<double>(nc);
     for (int ig = 0; ig < ng; ++ig)
       if (gs_.idx_coarse[ig] >= 0) rho[s][ig] = work[gs_.idx_coarse[ig]] * inv;
+  }
+  if (par::size() > 1) {
+    std::vector<double> buf;
+    for (const auto& da : D)
+      for (const RMatrix& d : da) buf.insert(buf.end(), d.data(), d.data() + d.size());
+    par::sum(buf.data(), buf.size());
+    size_t pos = 0;
+    for (auto& da : D)
+      for (RMatrix& d : da)
+        for (size_t i = 0; i < d.size(); ++i) d.data()[i] = buf[pos++];
   }
   symmetrize_density(rho);
   symmetrize_D(D);
@@ -987,6 +1017,12 @@ bool Calculation::scf() {
     std::vector<double> r(x_in.size());
     for (size_t i = 0; i < r.size(); ++i) r[i] = x_out[i] - x_in[i];
     dr2 = mixer_.dot(r, r);
+    if (par::size() > 1) {  // identical decisions on all processes: take the steering numbers from the root
+      double v[12] = {dr2, max_res, en_.band, en_.hartree, en_.xc, en_.zero, en_.onsite, en_.entropy_term, en_.total, en_.free, en_.sigma0, en_.harris};
+      par::bcast(v, 12);
+      dr2 = v[0], max_res = v[1], en_.band = v[2], en_.hartree = v[3], en_.xc = v[4], en_.zero = v[5], en_.onsite = v[6];
+      en_.entropy_term = v[7], en_.total = v[8], en_.free = v[9], en_.sigma0 = v[10], en_.harris = v[11];
+    }
     last_dr2_ = dr2;
 
     if (verbose)
@@ -1003,11 +1039,14 @@ bool Calculation::scf() {
       f_in = evaluate(rho_, D_, true);
       break;
     }
-    const std::vector<double> x_new = mixer_.mix(x_in, x_out);
+    std::vector<double> x_new = mixer_.mix(x_in, x_out);
+    par::bcast(x_new.data(), x_new.size());  // keeps the replicated densities bitwise identical
     unpack(x_new, rho_, D_);
     f_in = evaluate(rho_, D_, true);
     // wall-time limit: stop if the next iteration would not fit (state is consistent for a restart)
-    if (p_.max_seconds > 0.0 && wall_time() + 1.2 * (wall_time() - t_iter) > p_.max_seconds && iter < p_.max_scf) {
+    int stop = p_.max_seconds > 0.0 && wall_time() + 1.2 * (wall_time() - t_iter) > p_.max_seconds && iter < p_.max_scf;
+    par::bcast(&stop, 1);  // the clock of the root process decides
+    if (stop) {
       stopped_by_time_ = true;
       break;
     }
@@ -1069,7 +1108,8 @@ void Calculation::write_dos(const std::string& path, double width, int npoints) 
   // sphere weights of every state for the atoms: sum_{ij in (a,l)} P_i^* <phi_i|phi_j> P_j; with reduced
   // k-points the weight of atom a is the average over the symmetry-equivalent atoms g(a)
   std::vector<double> w(static_cast<size_t>(nat) * nl), wsym(static_cast<size_t>(nat) * nl);
-  for (int ik = 0; ik < nk; ++ik)
+  for (int ik = 0; ik < nk; ++ik) {
+    if (!par::owns(ik)) continue;
     for (int s = 0; s < nspin_; ++s) {
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
       const CMatrix& P = proj_psi_[ks];
@@ -1099,6 +1139,9 @@ void Calculation::write_dos(const std::string& path, double width, int npoints) 
         }
       }
     }
+  }
+  par::sum(dos.data(), dos.size());
+  if (!par::root()) return;
   std::FILE* f = std::fopen(path.c_str(), "w");
   LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
   const char lname[] = "spdfg";
@@ -1156,6 +1199,7 @@ bool Calculation::adopt_state(Calculation&& o) {
 
   // wavefunctions: copy the coefficients of common plane waves (identified by their integer G vectors)
   for (size_t ik = 0; ik < basis_.size(); ++ik) {
+    if (!par::owns(static_cast<int>(ik))) continue;
     const PWBasis &bn = basis_[ik], &bo = o.basis_[ik];
     std::vector<int> map(bn.npw, -1);
     if (bn.mill == bo.mill) {
@@ -1231,6 +1275,17 @@ struct FileCloser {
 }  // namespace
 
 void Calculation::save_checkpoint(const std::string& path) const {
+  const bool with_wfc = p_.checkpoint_wfc && !first_solve_;
+  if (!par::root()) {  // the root process writes the file; the others hand over their wavefunctions
+    if (with_wfc)
+      for (size_t ik = 0; ik < basis_.size(); ++ik)
+        if (par::owns(static_cast<int>(ik)))
+          for (int s = 0; s < nspin_; ++s) {
+            const size_t ks = ik * nspin_ + s;
+            par::send(psi_[ks].data(), psi_[ks].size(), 0, static_cast<int>(ks));
+          }
+    return;
+  }
   const std::string tmp = path + ".tmp";
   {
     FileCloser fc{std::fopen(tmp.c_str(), "wb")};
@@ -1253,7 +1308,7 @@ void Calculation::save_checkpoint(const std::string& path) const {
       for (int s = 0; s < nspin_; ++s) ok = ok && std::fwrite(D_[a][s].data(), sizeof(double), D_[a][s].size(), fc.f) == D_[a][s].size();
     }
     // wavefunctions (optional): per k-point the integer G vectors, per spin eigenvalues and coefficients
-    const int has_wfc = p_.checkpoint_wfc && !first_solve_ ? 1 : 0, nk = static_cast<int>(basis_.size());
+    const int has_wfc = with_wfc ? 1 : 0, nk = static_cast<int>(basis_.size());
     ok = ok && std::fwrite(&has_wfc, sizeof has_wfc, 1, fc.f) == 1;
     if (has_wfc) {
       ok = ok && std::fwrite(&nk, sizeof nk, 1, fc.f) == 1 && std::fwrite(&nbands_, sizeof nbands_, 1, fc.f) == 1;
@@ -1263,8 +1318,16 @@ void Calculation::save_checkpoint(const std::string& path) const {
              std::fwrite(b.mill.data(), sizeof(int), b.mill.size(), fc.f) == b.mill.size();
         for (int s = 0; s < nspin_ && ok; ++s) {
           const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
+          const cplx* data = psi_[ks].data();
+          const size_t count = static_cast<size_t>(b.npw) * nbands_;
+          std::vector<cplx> remote;
+          if (!par::owns(ik)) {  // wavefunctions of another process
+            remote.resize(count);
+            par::recv(remote.data(), count, par::owner(ik), static_cast<int>(ks));
+            data = remote.data();
+          }
           ok = ok && std::fwrite(eig_[ks].data(), sizeof(double), nbands_, fc.f) == static_cast<size_t>(nbands_) &&
-               std::fwrite(psi_[ks].data(), sizeof(cplx), psi_[ks].size(), fc.f) == psi_[ks].size();
+               std::fwrite(data, sizeof(cplx), count, fc.f) == count;
         }
       }
     }
@@ -1351,9 +1414,12 @@ bool Calculation::load_checkpoint(const std::string& path) {
     std::vector<cplx> buf(static_cast<size_t>(npw) * nbands_);
     for (int s = 0; s < nspin_; ++s) {
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
-      if (std::fread(eig[ks].data(), sizeof(double), nbands_, fc.f) != static_cast<size_t>(nbands_) ||
-          std::fread(buf.data(), sizeof(cplx), buf.size(), fc.f) != buf.size())
-        return true;
+      if (std::fread(eig[ks].data(), sizeof(double), nbands_, fc.f) != static_cast<size_t>(nbands_)) return true;
+      if (!par::owns(ik)) {  // belongs to another process
+        if (std::fseek(fc.f, static_cast<long>(buf.size() * sizeof(cplx)), SEEK_CUR) != 0) return true;
+        continue;
+      }
+      if (std::fread(buf.data(), sizeof(cplx), buf.size(), fc.f) != buf.size()) return true;
       psi[ks].resize(b.npw, nbands_);
       for (int n = 0; n < nbands_; ++n)
         for (int ig = 0; ig < npw; ++ig)

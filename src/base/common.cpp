@@ -14,7 +14,13 @@ namespace lsda {
 
 void fail(const std::string& msg) { throw std::runtime_error(msg); }
 
+namespace {
+bool g_logging = true;
+}
+void set_logging(bool enabled) { g_logging = enabled; }
+
 void logf(const char* fmt, ...) {
+  if (!g_logging) return;
   va_list ap;
   va_start(ap, fmt);
   std::vprintf(fmt, ap);

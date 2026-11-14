@@ -9,6 +9,20 @@
       "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-16", "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "linux-mpi",
+      "displayName": "Linux with MPI over k-points (needs an MPI library)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-mpi",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "LSDA_MPI": "ON" }
+    },
+    {
+      "name": "mpi-mock",
+      "displayName": "MPI code path against the fork-based stand-in (testing only)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-mpi-mock",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-16", "CMAKE_BUILD_TYPE": "Release", "LSDA_MPI": "ON", "LSDA_MPI_MOCK": "ON" }
+    },
+    {
       "name": "linux",
       "displayName": "Linux, system compiler + OpenBLAS/MKL + FFTW",
       "generator": "Ninja",

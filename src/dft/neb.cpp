@@ -1,5 +1,7 @@
 #include "dft/neb.hpp"
 
+#include "base/parallel.hpp"
+
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -225,6 +227,7 @@ NebResult run_neb(const Crystal& initial, const std::vector<Vec3>& frac_final, c
     return true;
   };
   auto on_step = [&](int) {  // positions of this step (consistent with the checkpoints) for restarts
+    if (!par::root()) return;
     std::ofstream out(pos_file);
     out.precision(17);
     out << ntot << " " << nat << "\n";
@@ -237,6 +240,7 @@ NebResult run_neb(const Crystal& initial, const std::vector<Vec3>& frac_final, c
 }
 
 void write_neb_results(const std::string& path, const Crystal& c, const NebResult& r) {
+  if (!par::root()) return;
   std::FILE* f = std::fopen(path.c_str(), "w");
   LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
   const int n = static_cast<int>(r.energy.size());

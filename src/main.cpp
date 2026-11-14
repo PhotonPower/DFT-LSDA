@@ -4,6 +4,7 @@
 #include <exception>
 #include <memory>
 
+#include "base/parallel.hpp"
 #include "dft/calculation.hpp"
 #include "dft/relax.hpp"
 #include "io/input.hpp"
@@ -23,15 +24,16 @@ static void print_forces(const Calculation& calc, const std::vector<Vec3>& f) {
   logf("    max |F| = %.8f   net force = (%.2e, %.2e, %.2e)\n", fmax, net[0], net[1], net[2]);
 }
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   if (argc != 2) {
-    std::fprintf(stderr, "usage: %s <input file>\n", argv[0]);
+    if (par::root()) std::fprintf(stderr, "usage: %s <input file>\n", argv[0]);
     return 1;
   }
   try {
     wall_time();
     logf("\n  lsda - plane-wave PAW code, local spin density approximation\n");
     logf("  input file: %s\n", argv[1]);
+    if (par::size() > 1) logf("  MPI processes: %d (k-points are distributed over the processes)\n", par::size());
     Input inp = read_input(argv[1]);
     logf("\n  PAW datasets\n");
     for (const Species& s : inp.crystal.species)
@@ -179,6 +181,14 @@ int main(int argc, char** argv) {
     return converged ? 0 : 3;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "\nERROR: %s\n", e.what());
+    if (par::size() > 1) par::abort(2);  // take the other processes down as well
     return 2;
   }
+}
+
+int main(int argc, char** argv) {
+  par::init(&argc, &argv);
+  const int code = run(argc, argv);
+  par::finalize();
+  return code;
 }

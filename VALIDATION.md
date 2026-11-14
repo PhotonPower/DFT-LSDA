@@ -215,6 +215,22 @@ Dabei behobene Schwäche der SCF-Schleife: Residuenänderungen bei unveränderte
 nach einem Neustart, wenn der Eigenlöser nur die Bänder verfeinert) gehen nicht mehr in die Pulay-Historie
 ein, und die schärfste Eigenlöser-Toleranz richtet sich nach `scf_tol`.
 
+## 7d. MPI über k-Punkte (emuliert)
+
+Ohne MPI-Bibliothek auf dem Entwicklungsrechner wurde der MPI-Zweig gegen eine Attrappe gebaut, die
+N Prozesse per `fork` und Sockets emuliert (Reduktionen, Broadcast, Senden an Prozess 0).
+
+| Test | Ergebnis |
+|---|---|
+| NiAl, 10 k-Punkte: 1 / 2 / 3 Prozesse | identische Energie (−1760.3107867541 Ha) und Iterationszahl |
+| komplette Regressionssuite mit 2 Prozessen (SCF, Kräfte, PBE, Relaxation, Neustart, DOS, NEB, Phononen, Spannung, Zellrelaxation) | 22 von 22 bestanden |
+| PBE-FeAl spinpolarisiert, ohne Symmetrie: 1 gegen 3 Prozesse | Energie, Moment, Kräfte identisch; Spannung 7e-16; DOS 1e-8 |
+| Checkpoint mit 3 Prozessen geschrieben, Neustart mit 2 Prozessen | gleiche Energie nach 2 SCF-Schritten |
+| NEB mit 3 Prozessen | identisch zu 2 Prozessen |
+
+Nicht geprüft: Lauf mit einer echten MPI-Bibliothek, Skalierung, die komplette Suite mit 3 Prozessen
+(auf dem Laptop zu langsam; nur die oben genannten Einzelfälle).
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

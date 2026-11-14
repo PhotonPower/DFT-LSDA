@@ -3,6 +3,7 @@
 //         - sum_n f_n sum_ij (dH_ij - eps_n dS_ij) d(P*_ni P_nj)/dR
 #include <cmath>
 
+#include "base/parallel.hpp"
 #include "dft/calculation.hpp"
 #include "dft/hamiltonian.hpp"
 #include "math/special.hpp"
@@ -70,6 +71,7 @@ std::vector<Vec3> Calculation::forces() {
   std::vector<double> fnl(3 * static_cast<size_t>(nat), 0.0);
   const int nk = static_cast<int>(kpts_.size());
   for (int ik = 0; ik < nk; ++ik) {
+    if (!par::owns(ik)) continue;
     const PWBasis& b = basis_[ik];
     const Projectors proj = make_projectors(c_, b);
     for (int s = 0; s < nspin_; ++s) {
@@ -105,6 +107,8 @@ std::vector<Vec3> Calculation::forces() {
     }
   }
 
+  par::sum(fnl.data(), fnl.size());
+
   // ---- total, symmetrized --------------------------------------------------------------------
   std::vector<Vec3> F(nat), Fs(nat, Vec3{0, 0, 0});
   for (int a = 0; a < nat; ++a)
@@ -117,6 +121,14 @@ std::vector<Vec3> Calculation::forces() {
         for (int j = 0; j < 3; ++j) Fs[bq][i] += op.R[j][i] * f[j];  // R^T f
     }
     for (int i = 0; i < 3; ++i) Fs[bq][i] /= nops;
+  }
+  if (par::size() > 1) {  // identical forces (and therefore identical atomic steps) on all processes
+    std::vector<double> flat(3 * static_cast<size_t>(nat));
+    for (int a = 0; a < nat; ++a)
+      for (int d = 0; d < 3; ++d) flat[3 * a + d] = Fs[a][d];
+    par::bcast(flat.data(), flat.size());
+    for (int a = 0; a < nat; ++a)
+      for (int d = 0; d < 3; ++d) Fs[a][d] = flat[3 * a + d];
   }
   return Fs;
 }
@@ -146,6 +158,7 @@ Mat3 Calculation::stress() {
   const int nk = static_cast<int>(kpts_.size());
   double diag_proj = 0.0;
   for (int ik = 0; ik < nk; ++ik) {
+    if (!par::owns(ik)) continue;
     const PWBasis& b = basis_[ik];
     std::vector<int> offset(nat);
     for (int a = 0, off = 0; a < nat; ++a) {
@@ -200,6 +213,13 @@ Mat3 Calculation::stress() {
         if (c == 0) diag_proj -= dsum;  // volume factor of the projectors, -1/2 delta_ab * 2
       }
     }
+  }
+
+  {  // k-point sums of all processes
+    double v[7] = {sig[0], sig[1], sig[2], sig[3], sig[4], sig[5], diag_proj};
+    par::sum(v, 7);
+    for (int c = 0; c < 6; ++c) sig[c] = v[c];
+    diag_proj = v[6];
   }
 
   // ---- local terms on the dense sphere -----------------------------------------------------------
@@ -273,6 +293,7 @@ Mat3 Calculation::stress() {
           for (int l = 0; l < 3; ++l) out[i][j] += op.R[i][k] * raw[k][l] * op.R[j][l];
   for (auto& row : out)
     for (double& v : row) v /= static_cast<double>(ops_.size());
+  par::bcast(&out[0][0], 9);
   return out;
 }
 

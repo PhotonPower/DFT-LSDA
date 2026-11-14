@@ -25,6 +25,7 @@ inline constexpr double hartree_in_kelvin = 315775.02480407;
 
 // printf-style logging to stdout (flushed, so that long runs can be followed)
 void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void set_logging(bool enabled);  // logf prints only if enabled (in MPI runs: root process only)
 std::string strf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // ---- small 3x3 helpers ------------------------------------------------------

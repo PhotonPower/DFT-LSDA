@@ -1,5 +1,7 @@
 #include "io/input.hpp"
 
+#include "base/parallel.hpp"
+
 #include <cmath>
 #include <fstream>
 #include <map>
@@ -254,6 +256,7 @@ Input read_input(const std::string& path) {
 
 void write_results(const std::string& path, const Calculation& calc, bool converged, const std::vector<Vec3>* forces,
                    const Mat3* stress) {
+  if (!par::root()) return;
   std::FILE* f = std::fopen(path.c_str(), "w");
   LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
   const Crystal& c = calc.crystal();
