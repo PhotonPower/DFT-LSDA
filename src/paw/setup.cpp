@@ -167,6 +167,13 @@ PawSetup PawSetup::load(const std::string& path, int ntheta) {
   for (size_t p = 0; p < s.quad_.points.size(); ++p)
     real_ylm(2 * s.lmax, s.quad_.points[p].data(), s.ylm_quad_.col(static_cast<int>(p)));
 
+  s.ylm_grad_quad_.resize(3 * static_cast<size_t>(s.nL) * s.quad_.points.size());
+  {
+    std::vector<double> y(s.nL);
+    for (size_t p = 0; p < s.quad_.points.size(); ++p)
+      real_ylm_grad(2 * s.lmax, s.quad_.points[p].data(), y.data(), &s.ylm_grad_quad_[3 * s.nL * p]);
+  }
+
   s.compute_onsite_tensors();
   return s;
 }
@@ -191,6 +198,22 @@ void PawSetup::compute_onsite_tensors() {
         nq_ps_[q][i] = phit[j1][i] * phit[j2][i];
       }
     }
+  // radial derivatives for gradient-corrected functionals
+  dnq_ae_.assign(nq_, {});
+  dnq_ps_.assign(nq_, {});
+  for (int j1 = 0; j1 < nj; ++j1)
+    for (int j2 = j1; j2 < nj; ++j2) {
+      std::vector<double> fa(ncut + 2), fp(ncut + 2);
+      for (int i = 0; i < ncut + 2; ++i) {
+        fa[i] = phi[j1][i] * phi[j2][i];
+        fp[i] = phit[j1][i] * phit[j2][i];
+      }
+      dnq_ae_[pair(j1, j2)] = grid.derivative(fa, ncut);
+      dnq_ps_[pair(j1, j2)] = grid.derivative(fp, ncut);
+    }
+  dnc_ = grid.derivative(nc, ncut);
+  dnct_ = grid.derivative(nct, ncut);
+
   auto allowed = [&](int q, int l) {
     return l >= std::abs(q_l1[q] - q_l2[q]) && l <= q_l1[q] + q_l2[q] && (l + q_l1[q] + q_l2[q]) % 2 == 0;
   };
@@ -354,6 +377,17 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
   std::vector<RMatrix> vlq(nspin);  // sum_k w_k Y_L(k) int r^2 [v_ae n_q - v_ps n~_q] dr
   for (int s = 0; s < nspin; ++s) vlq[s].resize(nL, nq_);
   double exc_total = 0.0;
+  if (xc.is_gga()) {
+    energy += onsite_xc_gga(nspin, dlq, dH ? &vlq : nullptr, xc);
+    if (dH)
+      for (int s = 0; s < nspin; ++s)
+        for (int ij = 0; ij < n2; ++ij) {
+          double sum = 0.0;
+          for (const GauntEntry& ge : gaunt_ij_[ij]) sum += ge.g * vlq[s](ge.L, ge.q);
+          dH[s].data()[ij] += sum;
+        }
+    return energy;
+  }
   std::vector<double> na(ncut), nb(ncut), e(ncut), va(ncut), vb(ncut), cq(nq_ * 2);
   for (int k = 0; k < npts; ++k) {
     const double* y = ylm_quad_.col(k);
@@ -411,6 +445,127 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
         dH[s].data()[ij] += sum;
       }
   return energy;
+}
+
+// Gradient-corrected on-site xc energy E_xc[n_a] - E_xc[n~_a] and, if vlq is given, its derivative with
+// respect to the multipole density-matrix elements D^s_Lq. With n_s(r, Omega) = sum_L n_sL(r) Y_L(Omega):
+//   grad n_s = r^ dn_s/dr + (1/r) sum_L n_sL grad_Omega Y_L ,
+//   dE/dD^s_Lq = sum_k w_k int r^2 dr { v_s Y_L n_q + h_s.r^ Y_L dn_q/dr + (1/r) h_s . grad_Omega Y_L n_q },
+// h_s = de/d(grad n_s) = 2 e_ss grad n_s + e_ud grad n_s'.
+double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::vector<RMatrix>* vlq,
+                               const XCFunctional& xc) const {
+  const int npts = static_cast<int>(quad_.points.size());
+  const double inv_s4pi = 1.0 / std::sqrt(4 * pi), spin_fac = nspin == 2 ? 1.0 : 0.5;
+  std::vector<double> inv_r2(ncut, 0.0);
+  for (int i = 0; i < ncut; ++i)
+    if (grid.r[i] > 0.0) inv_r2[i] = 1.0 / (grid.r[i] * grid.r[i]);
+  double exc_total = 0.0;
+  // per spin channel: density, radial derivative, tangential gradient (three components, without the 1/r)
+  std::vector<double> n[2], dn[2], tg[2][3];
+  for (int s = 0; s < 2; ++s) {
+    n[s].resize(ncut);
+    dn[s].resize(ncut);
+    for (auto& t : tg[s]) t.resize(ncut);
+  }
+  std::vector<double> suu(ncut), sud(ncut), sdd(ncut), e(ncut), v[2], vss[2], vud(ncut), hr(ncut), ht(ncut);
+  for (int s = 0; s < 2; ++s) {
+    v[s].resize(ncut);
+    vss[s].resize(ncut);
+  }
+  std::vector<double> c(2 * nq_), tc(2 * 3 * nq_);
+  for (int k = 0; k < npts; ++k) {
+    const double* y = ylm_quad_.col(k);
+    const double* gy = &ylm_grad_quad_[3 * static_cast<size_t>(nL) * k];
+    for (int s = 0; s < nspin; ++s)
+      for (int q = 0; q < nq_; ++q) {
+        double sum = 0.0, t[3] = {0, 0, 0};
+        for (int L = 0; L < nL; ++L) {
+          const double d = dlq[s](L, q);
+          sum += y[L] * d;
+          for (int a = 0; a < 3; ++a) t[a] += gy[3 * L + a] * d;
+        }
+        c[s * nq_ + q] = spin_fac * sum;
+        for (int a = 0; a < 3; ++a) tc[(s * 3 + a) * nq_ + q] = spin_fac * t[a];
+      }
+    for (int pass = 0; pass < 2; ++pass) {  // 0: all-electron, 1: pseudo
+      const auto& nq = pass == 0 ? nq_ae_ : nq_ps_;
+      const auto& dnq = pass == 0 ? dnq_ae_ : dnq_ps_;
+      const std::vector<double>& core = pass == 0 ? nc : nct;
+      const std::vector<double>& dcore = pass == 0 ? dnc_ : dnct_;
+      const double sign = pass == 0 ? 1.0 : -1.0;
+      for (int s = 0; s < nspin; ++s) {
+        for (int i = 0; i < ncut; ++i) {
+          n[s][i] = 0.5 * inv_s4pi * core[i];
+          dn[s][i] = 0.5 * inv_s4pi * dcore[i];
+        }
+        for (auto& t : tg[s]) std::fill(t.begin(), t.end(), 0.0);
+        for (int q = 0; q < nq_; ++q) {
+          const double cq = c[s * nq_ + q];
+          const double *f = nq[q].data(), *df = dnq[q].data();
+          if (cq != 0.0)
+            for (int i = 0; i < ncut; ++i) {
+              n[s][i] += cq * f[i];
+              dn[s][i] += cq * df[i];
+            }
+          for (int a = 0; a < 3; ++a) {
+            const double ta = tc[(s * 3 + a) * nq_ + q];
+            if (ta == 0.0) continue;
+            double* t = tg[s][a].data();
+            for (int i = 0; i < ncut; ++i) t[i] += ta * f[i];
+          }
+        }
+      }
+      const int o = nspin == 2 ? 1 : 0;  // index of the second spin channel (identical to the first for nspin = 1)
+      for (int i = 0; i < ncut; ++i) {
+        double tuu = 0.0, tud = 0.0, tdd = 0.0;
+        for (int a = 0; a < 3; ++a) {
+          tuu += tg[0][a][i] * tg[0][a][i];
+          tud += tg[0][a][i] * tg[o][a][i];
+          tdd += tg[o][a][i] * tg[o][a][i];
+        }
+        suu[i] = dn[0][i] * dn[0][i] + tuu * inv_r2[i];
+        sud[i] = dn[0][i] * dn[o][i] + tud * inv_r2[i];
+        sdd[i] = dn[o][i] * dn[o][i] + tdd * inv_r2[i];
+      }
+      xc.evaluate_gga(ncut, n[0].data(), n[o].data(), suu.data(), sud.data(), sdd.data(), e.data(), v[0].data(), v[1].data(),
+                      vss[0].data(), vud.data(), vss[1].data());
+      double esum = 0.0;
+      for (int i = 0; i < ncut; ++i) esum += wr2_[i] * e[i];
+      exc_total += sign * quad_.weights[k] * esum;
+      if (!vlq) continue;
+      const double wk = sign * quad_.weights[k];
+      for (int s = 0; s < nspin; ++s) {
+        const int s2 = nspin == 2 ? 1 - s : 0;
+        // radial part of h_s and the weighted local potential
+        for (int i = 0; i < ncut; ++i) hr[i] = wr2_[i] * (2.0 * vss[s][i] * dn[s][i] + vud[i] * dn[s2][i]);
+        std::vector<double> i1(nq_, 0.0);
+        for (int q = 0; q < nq_; ++q) {
+          const double *f = nq[q].data(), *df = dnq[q].data();
+          double sum = 0.0;
+          for (int i = 0; i < ncut; ++i) sum += wr2_[i] * v[s][i] * f[i] + hr[i] * df[i];
+          i1[q] = sum;
+        }
+        for (int L = 0; L < nL; ++L) {
+          const double f = wk * y[L];
+          if (f == 0.0) continue;
+          for (int q = 0; q < nq_; ++q) (*vlq)[s](L, q) += f * i1[q];
+        }
+        // tangential part: int r^2 (1/r^2) (2 e_ss T_s + e_ud T_s') . grad_Omega Y_L n_q dr
+        for (int a = 0; a < 3; ++a) {
+          for (int i = 0; i < ncut; ++i)
+            ht[i] = wr2_[i] * inv_r2[i] * (2.0 * vss[s][i] * tg[s][a][i] + vud[i] * tg[s2][a][i]);
+          for (int q = 0; q < nq_; ++q) {
+            const double* f = nq[q].data();
+            double sum = 0.0;
+            for (int i = 0; i < ncut; ++i) sum += ht[i] * f[i];
+            if (sum == 0.0) continue;
+            for (int L = 0; L < nL; ++L) (*vlq)[s](L, q) += wk * gy[3 * L + a] * sum;
+          }
+        }
+      }
+    }
+  }
+  return exc_total;
 }
 
 void PawSetup::build_tables(double qmax_wfc, double qmax_dense) {

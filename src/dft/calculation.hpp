@@ -30,7 +30,7 @@ struct Params {
   std::string smearing = "cold";
   double width = 0.005;  // Ha
   std::optional<double> fixed_moment;
-  std::string xc = "pw92";
+  std::string xc;             // pw92 | pbe; empty: taken from the PAW datasets
   // self-consistency
   int max_scf = 100;
   double scf_tol = 1e-9;       // threshold for the squared norm of the density residual (Hartree metric)
@@ -161,6 +161,7 @@ class Calculation {
 
   Functional f_pot_;        // energy terms of the density that generated the current potential
   double vxc_n_ = 0;        // int v_xc n~ d^3r for that density (including the pseudo core)
+  double gga_stress_[6] = {0, 0, 0, 0, 0, 0};  // int sum_s (de/d grad n_s)_a (grad n_s)_b d^3r  (xx yy zz yz xz xy)
 
   Mixer mixer_;
   Energies en_;

@@ -27,7 +27,18 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   LSDA_CHECK(p_.nspin == 1 || p_.nspin == 2, "nspin must be 1 or 2");
   LSDA_CHECK(p_.eigensolver == "ppcg" || p_.eigensolver == "lobpcg", "eigensolver must be ppcg or lobpcg");
   nspin_ = p_.nspin;
-  xc_ = make_xc(p_.xc);
+  // exchange-correlation functional: by default the one the PAW datasets were generated with
+  {
+    std::string from_data;
+    for (const Species& sp : c_.species) {
+      if (from_data.empty()) from_data = sp.setup.xc_name;
+      LSDA_CHECK(from_data == sp.setup.xc_name, "PAW datasets were generated with different xc functionals");
+    }
+    if (p_.xc.empty()) p_.xc = from_data;
+    xc_ = make_xc(p_.xc);
+    if (!from_data.empty() && make_xc(from_data)->name() != xc_->name() && p_.verbosity > 0)
+      logf("\n  WARNING: xc functional '%s' differs from the one of the PAW datasets (%s)\n", p_.xc.c_str(), from_data.c_str());
+  }
   smearing_ = parse_smearing(p_.smearing);
   nelec_ = c_.n_electrons();
 
@@ -478,12 +489,77 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
     const double f = nspin_ == 2 ? 1.0 : 0.5;
     for (size_t i = 0; i < nfine; ++i) dst[i] = f * work[i].real();
   }
-  if (nspin_ == 1) {
+  if (xc_->is_gga()) {
+    // ---- gradient-corrected functional (White & Bird scheme) --------------------------------
+    // grad n_s from i G n_s(G) on the dense sphere; potential v_s = de/dn_s - div(de/d grad n_s)
+    const double fs = nspin_ == 2 ? 1.0 : 0.5;
+    std::vector<std::vector<double>> grad(3 * nspin_, std::vector<double>(nfine));
+    for (int s = 0; s < nspin_; ++s)
+      for (int a = 0; a < 3; ++a) {
+        std::fill(work.begin(), work.end(), cplx(0.0));
+        for (int ig = 0; ig < ng; ++ig)
+          work[gs_.idx_fine[ig]] = cplx(0.0, gs_.g[3 * ig + a]) * (rho[s][ig] + (nspin_ == 2 ? 0.5 : 1.0) * nct_G_[ig]);
+        fft_f_.backward(work.data());
+        std::vector<double>& g = grad[3 * s + a];
+        for (size_t i = 0; i < nfine; ++i) g[i] = fs * work[i].real();
+      }
+    auto gr = [&](int s, int a) -> const std::vector<double>& { return grad[3 * (nspin_ == 2 ? s : 0) + a]; };
+    std::vector<double> suu(nfine), sud(nfine), sdd(nfine), vsuu(nfine), vsud(nfine), vsdd(nfine);
+#pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < nfine; ++i) {
+      double uu = 0.0, ud = 0.0, dd = 0.0;
+      for (int a = 0; a < 3; ++a) {
+        const double gu = gr(0, a)[i], gd = gr(1, a)[i];
+        uu += gu * gu;
+        ud += gu * gd;
+        dd += gd * gd;
+      }
+      suu[i] = uu;
+      sud[i] = ud;
+      sdd[i] = dd;
+    }
+    const std::vector<double>& nd = nspin_ == 2 ? ndn : nup;
+    vdn.resize(nfine);
+    xc_->evaluate_gga(nfine, nup.data(), nd.data(), suu.data(), sud.data(), sdd.data(), exc.data(), vup.data(), vdn.data(),
+                      vsuu.data(), vsud.data(), vsdd.data());
+    if (build) {  // integrals for the stress tensor: sum_s (de/d grad n_s)_a (grad n_s)_b
+      const int ca[6] = {0, 1, 2, 1, 0, 0}, cb[6] = {0, 1, 2, 2, 2, 1};
+      for (int c = 0; c < 6; ++c) {
+        double sum = 0.0;
+        const std::vector<double>&ua = gr(0, ca[c]), &ub = gr(0, cb[c]), &da = gr(1, ca[c]), &db = gr(1, cb[c]);
+#pragma omp parallel for schedule(static) reduction(+ : sum)
+        for (size_t i = 0; i < nfine; ++i)
+          sum += 2.0 * vsuu[i] * ua[i] * ub[i] + 2.0 * vsdd[i] * da[i] * db[i] + vsud[i] * (ua[i] * db[i] + da[i] * ub[i]);
+        gga_stress_[c] = sum * vol / static_cast<double>(nfine);
+      }
+    }
+    // divergence term, evaluated on the dense sphere
+    std::vector<cplx> div(ng);
+    for (int s = 0; s < nspin_; ++s) {
+      std::fill(div.begin(), div.end(), cplx(0.0));
+      const std::vector<double>& vss = s == 0 ? vsuu : vsdd;
+      for (int a = 0; a < 3; ++a) {
+        const std::vector<double>&gs = gr(s, a), &go = gr(1 - s, a);
+#pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < nfine; ++i) work[i] = 2.0 * vss[i] * gs[i] + vsud[i] * go[i];
+        fft_f_.forward(work.data());
+        for (int ig = 0; ig < ng; ++ig) div[ig] += cplx(0.0, gs_.g[3 * ig + a]) * work[gs_.idx_fine[ig]];
+      }
+      std::fill(work.begin(), work.end(), cplx(0.0));
+      const double inv = 1.0 / static_cast<double>(nfine);
+      for (int ig = 0; ig < ng; ++ig) work[gs_.idx_fine[ig]] = div[ig] * inv;
+      fft_f_.backward(work.data());
+      std::vector<double>& v = s == 0 ? vup : vdn;
+      for (size_t i = 0; i < nfine; ++i) v[i] -= work[i].real();
+    }
+    if (nspin_ == 1) vdn.clear();
+  } else if (nspin_ == 1) {
     xc_->evaluate(nfine, nup.data(), nup.data(), exc.data(), vup.data(), vup.data());
   } else {
     vdn.resize(nfine);
     xc_->evaluate(nfine, nup.data(), ndn.data(), exc.data(), vup.data(), vdn.data());
   }
+  if (build && !xc_->is_gga()) std::fill(gga_stress_, gga_stress_ + 6, 0.0);
   double exc_sum = 0.0;
 #pragma omp parallel for schedule(static) reduction(+ : exc_sum)
   for (size_t i = 0; i < nfine; ++i) exc_sum += exc[i];

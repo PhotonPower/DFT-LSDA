@@ -35,6 +35,7 @@ add_library(lsdacore STATIC
   src/math/special.cpp
   src/math/radial.cpp
   src/xc/lda.cpp
+  src/xc/pbe.cpp
   src/paw/xml.cpp
   src/paw/setup.cpp
   src/crystal/crystal.cpp

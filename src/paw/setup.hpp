@@ -76,6 +76,10 @@ class PawSetup {
   int nq_ = 0;  // radial pairs
   int pair(int j1, int j2) const { return j1 <= j2 ? j1 * nj - j1 * (j1 - 1) / 2 + (j2 - j1) : pair(j2, j1); }
   std::vector<std::vector<double>> nq_ae_, nq_ps_;  // pair densities phi_j1 phi_j2 on r < r(ncut)
+  std::vector<std::vector<double>> dnq_ae_, dnq_ps_;  // their radial derivatives (gradient-corrected functionals)
+  std::vector<double> dnc_, dnct_;                  // radial derivatives of the core densities
+  std::vector<double> ylm_grad_quad_;               // tangential gradients of Y_L at the quadrature points (3 nL per point)
+  double onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::vector<RMatrix>* vlq, const XCFunctional& xc) const;
   std::vector<double> wr2_;                         // radial weights * r^2
   std::vector<std::vector<double>> shape_;          // g_l(r), l = 0..2 lmax
   SphereQuadrature quad_;

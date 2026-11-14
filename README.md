@@ -8,9 +8,9 @@ B2-Aluminiden NiAl und FeAl, aber allgemein für periodische Kristalle einsetzba
 
 | Baustein | Umsetzung |
 |---|---|
-| Funktional | LSDA: Slater-Austausch + Perdew-Wang-92-Korrelation, kollinearer Spin |
+| Funktional | LSDA (Slater-Austausch + Perdew-Wang-92-Korrelation) und GGA-PBE, jeweils kollinear spinpolarisiert; Gradiententerme auf dem Gitter (White-Bird) und in den PAW-Kugeln |
 | Rumpf-Valenz | PAW nach Blöchl in der Formulierung von Mortensen, Hansen, Jacobsen (PRB 71, 035109): neutrale glatte Ladung mit Kompensationsladungen, keine Ewald-Summe |
-| Datensätze | PAW-XML (JTH-Tabelle v1.1, LDA-PW, skalarrelativistisch; Ni/Fe mit 3s3p-Semicore) in `pseudos/` |
+| Datensätze | PAW-XML (JTH-Tabelle v1.1, LDA-PW und GGA-PBE, skalarrelativistisch; Ni/Fe mit 3s3p-Semicore) in `pseudos/` |
 | Basis | ebene Wellen; grobes FFT-Gitter für Wellenfunktionen, dichte G-Kugel für Dichte, Kompensationsladung, Hartree und XC |
 | Brillouin-Zone | Monkhorst-Pack-Gitter, Reduktion mit der vollen Raumgruppe + Zeitumkehr; Dichte, PAW-Dichtematrizen und Kräfte werden symmetrisiert |
 | Besetzungen | Fermi-Dirac, Gauß, Methfessel-Paxton (1. Ordnung), Marzari-Vanderbilt ("cold"); optional festes Gesamtmoment |
@@ -89,6 +89,7 @@ end
 | `ecut_dense` / `dense_factor` | 8·`ecut` | Cutoff der dichten G-Kugel (≥ 4·`ecut`; ab Faktor 6 auf < 1e-6 Ha konvergiert) |
 | `kpoints`, `kshift` | `1 1 1`, `0 0 0` | Monkhorst-Pack-Gitter, Verschiebung (0 oder 0.5) |
 | `symmetry` | `true` | Raumgruppensymmetrie verwenden |
+| `xc` | aus den Datensätzen | `pw92` (LSDA) oder `pbe`; ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
 | `nspin` | 1 | 2 = spinpolarisiert |
 | `nbands` | automatisch | Zahl der Bänder |
 | `smearing`, `width` | `cold`, 0.005 Ha | `fermi`, `gauss`, `mp1`, `cold` |
@@ -129,6 +130,12 @@ cd examples/defects
 ./run_defects.sh Fe 2.813 3 "4 4 4" 2 1.0    # FeAl, spinpolarisiert (Startmoment 1 µB)
 ```
 
+## LDA oder PBE
+
+Das Funktional folgt den Datensätzen im `species`-Block; für PBE also `Ni.GGA_PBE-JTH.xml` usw. eintragen.
+Im Defekt-Workflow: `XC=pbe ./run_defects.sh Ni <a> 2 "4 4 4"` (eigene Gitterkonstante für PBE bestimmen,
+z. B. mit `task = cellrelax`). PBE kostet auf dem Gitter und in den PAW-Kugeln etwas mehr als LDA.
+
 ## Rechnen in Zeitscheiben (ohne Server)
 
 Mit `max_seconds` lässt sich jede Rechnung in kurze Stücke teilen; jeder Aufruf setzt dort fort, wo der
@@ -166,7 +173,7 @@ ECUT=25 ./run_defects.sh Ni 2.834 3 "4 4 4"                             # 54-Ato
 
 Siehe `VALIDATION.md` für die Zahlen. Kurzfassung der Prüfungen, die der Code besteht:
 
-* isoliertes Al-Atom in der Box reproduziert die All-Elektronen-Gesamtenergie des Referenzatoms;
+* isoliertes Al-Atom in der Box reproduziert die All-Elektronen-Gesamtenergie des Referenzatoms (LDA und PBE);
 * beide Eigenlöser reproduzieren die dichte Diagonalisierung der vollen PAW-Hamiltonmatrix;
 * analytische Kräfte und Spannungen = finite Differenzen der freien Energie (spinpolarisiert, d-Elektronen);
 * Rechnung mit und ohne Symmetrie liefert identische Energien;
@@ -190,8 +197,9 @@ tests         Unit- und Regressionstests
 
 ### Erweiterungspunkte
 
-* **Weitere Funktionale (GGA):** von `XCFunctional` ableiten; für Gradienten sind zusätzlich die
-  Gitter-Ableitungen in `Calculation::evaluate` und die radiale GGA-Korrektur in `PawSetup::onsite` nötig.
+* **Weitere Funktionale:** von `XCFunctional` ableiten (`evaluate` für lokale, `evaluate_gga` für
+  gradientenkorrigierte Funktionale); Gitter- und On-site-Teil sind für beide Klassen vorhanden.
+  Ableitungen lassen sich mit den Dualzahlen aus `base/dual.hpp` automatisch bilden.
 * **MPI über k-Punkte:** die Schleife in `Calculation::solve_bands` ist pro k-Punkt unabhängig.
 * **Spin-Bahn-Kopplung**, **GPU-FFT**: bisher nicht enthalten.
 * **Weitere Elemente:** jeder PAW-XML-Datensatz mit einem Radialgitter und `sinc`-, `gauss`- oder

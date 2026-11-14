@@ -68,6 +68,15 @@ std::vector<double> RadialGrid::hartree(int l, const std::vector<double>& n, int
   return v;
 }
 
+std::vector<double> RadialGrid::derivative(const std::vector<double>& f, int npts) const {
+  LSDA_CHECK(npts >= 5 && static_cast<int>(f.size()) >= npts + 2, "radial derivative: not enough points");
+  std::vector<double> d(npts);
+  d[0] = (-25 * f[0] + 48 * f[1] - 36 * f[2] + 16 * f[3] - 3 * f[4]) / (12 * dr[0]);
+  d[1] = (-3 * f[0] - 10 * f[1] + 18 * f[2] - 6 * f[3] + f[4]) / (12 * dr[1]);
+  for (int i = 2; i < npts; ++i) d[i] = (f[i - 2] - 8 * f[i - 1] + 8 * f[i + 1] - f[i + 2]) / (12 * dr[i]);
+  return d;
+}
+
 double lagrange6(const double* f, int n, double x) {
   int i0 = static_cast<int>(std::floor(x)) - 2;
   if (i0 < 0) i0 = 0;

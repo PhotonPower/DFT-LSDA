@@ -45,6 +45,16 @@ Gesamtenergie muss die All-Elektronen-Energie des Referenzatoms im Datensatz rep
 
 Der Restfehler (17 µHa bei L = 30) fällt weiter mit Boxgröße und Cutoff.
 
+PBE (Datensatz `Al.GGA_PBE-JTH.xml`, Referenz −242.684686 Ha), ecut 15 Ha:
+
+| Box L (Bohr) | E (Ha) | E − E_AE (mHa) |
+|---|---|---|
+| 16 | −242.683575 | +1.111 |
+| 22 | −242.684592 | +0.094 |
+
+Gleiche Boxkonvergenz wie bei LDA; damit sind Funktional, Gitter-Gradiententerme und die
+gradientenkorrigierte On-site-Korrektur gemeinsam geprüft.
+
 ## 3. Kräfte gegen finite Differenzen
 
 Verzerrtes B2-FeAl (Al um (0.04, 0.03, −0.02)·a verschoben), spinpolarisiert (M = 1.05 µB),
@@ -89,6 +99,20 @@ Basis um die Pulay-Spannung von der Ableitung der Energie ab; mit `ecut_smooth` 
 (6×6×6 k); NiAl von einer tetragonal verzerrten Zelle (2.90 × 2.929 × 2.90 Å) → kubisch, a = 2.840 Å
 in 7 Schritten (4×4×4 k, 20 Ha). Bei 20 Ha ist P(V) für NiAl noch auf etwa 1 GPa rau (Ni-Semicore);
 für Spannungen an Ni/Fe-Systemen daher ≥ 25–30 Ha.
+
+## 3b. PBE
+
+| Test | Abweichung |
+|---|---|
+| PBE bei verschwindendem Gradienten = LSDA; Austausch-Faktor F_x(s); Grenzfälle der Korrelation | ≤ 2e-6 |
+| alle fünf partiellen Ableitungen des Funktionals (finite Differenzen) | 1e-6 |
+| On-site-Hamiltonoperator = ∂ΔE/∂D mit PBE (Fe, Ni) | 5–7e-8 |
+| Kräfte, verzerrtes FeAl spinpolarisiert (M = 1.03 µB): F_x, F_z gegen finite Differenzen | 9e-7 Ha/Bohr |
+| Spannung NiAl (feste Basis): σ_xx / σ_yz | 4e-8 / 8e-11 Ha/Bohr³ |
+| Spannung FeAl spinpolarisiert (M = 1.77 µB): σ_xx / σ_yz | 4e-8 / 1.5e-10 Ha/Bohr³ |
+| Zellrelaxation fcc-Al (6×6×6 k): a = 4.048 Å (LDA mit gleichen Einstellungen: 3.990 Å) | – |
+
+Gitterkonstanten und Momente von NiAl, FeAl, Fe und Ni mit PBE sind **nicht** gerechnet.
 
 ## 4. Symmetrie und Löser
 

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "base/dual.hpp"
+
 namespace lsda {
 
 void sph_bessel(int lmax, double x, double* jl) {
@@ -45,40 +47,7 @@ double sph_bessel(int l, double x) {
 
 namespace {
 
-// first-order dual number in three variables (forward-mode differentiation)
-struct Dual3 {
-  double v = 0.0;
-  double d[3] = {0.0, 0.0, 0.0};
-  Dual3() = default;
-  Dual3(double x) : v(x) {}
-};
-inline Dual3 operator+(const Dual3& a, const Dual3& b) {
-  Dual3 r(a.v + b.v);
-  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] + b.d[i];
-  return r;
-}
-inline Dual3 operator-(const Dual3& a, const Dual3& b) {
-  Dual3 r(a.v - b.v);
-  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] - b.d[i];
-  return r;
-}
-inline Dual3 operator*(const Dual3& a, const Dual3& b) {
-  Dual3 r(a.v * b.v);
-  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] * b.v + a.v * b.d[i];
-  return r;
-}
-inline Dual3 operator/(const Dual3& a, const Dual3& b) {
-  Dual3 r(a.v / b.v);
-  for (int i = 0; i < 3; ++i) r.d[i] = (a.d[i] - r.v * b.d[i]) / b.v;
-  return r;
-}
-inline Dual3 sqrt(const Dual3& a) {
-  Dual3 r(std::sqrt(a.v));
-  for (int i = 0; i < 3; ++i) r.d[i] = 0.5 * a.d[i] / r.v;
-  return r;
-}
-inline double value(double x) { return x; }
-inline double value(const Dual3& x) { return x.v; }
+using Dual3 = Dual<3>;
 
 // Y_lm(v/|v|) for a scalar type T (double or Dual3); vx, vy, vz are the components of v != 0
 template <class T>
@@ -140,8 +109,7 @@ void real_ylm_grad(int lmax, const double* v, double* ylm, double* grad) {
     std::fill(grad, grad + 3 * n, 0.0);
     return;
   }
-  Dual3 x(v[0]), y(v[1]), z(v[2]);
-  x.d[0] = y.d[1] = z.d[2] = 1.0;
+  const Dual3 x = Dual3::variable(v[0], 0), y = Dual3::variable(v[1], 1), z = Dual3::variable(v[2], 2);
   Dual3 out[49];
   LSDA_CHECK(n <= 49, "real_ylm_grad: lmax too large");
   real_ylm_impl<Dual3>(lmax, x, y, z, out);

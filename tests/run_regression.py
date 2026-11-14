@@ -4,7 +4,7 @@
 Usage: run_regression.py <path to lsda> <pseudo dir> [--print]   (--print shows the computed values)
 
 The references were produced with this code after it had been validated against
-  * the all-electron total energy of the Al reference atom (isolated atom in a box, 2e-5 Ha),
+  * the all-electron total energy of the Al reference atom (isolated atom in a box; LDA and PBE),
   * finite-difference forces, and
   * the equality of calculations with and without symmetry.
 """
@@ -92,6 +92,12 @@ end
 """, free_energy=None, magnetization=None, force_al=None, tol=3e-7),
 }
 
+# PBE: gradient-corrected functional on the grid and in the PAW spheres (non-magnetic and spin-polarized)
+CASES["NiAl_B2_pbe"] = dict(text=CASES["NiAl_B2"]["text"].replace("LDA_PW-JTH", "GGA_PBE-JTH").replace("kpoints = 4 4 4", "kpoints = 3 3 3"),
+                            free_energy=None, tol=2e-7)
+CASES["FeAl_forces_pbe"] = dict(text=CASES["FeAl_forces"]["text"].replace("LDA_PW-JTH", "GGA_PBE-JTH").replace("kpoints = 3 3 3", "kpoints = 2 2 2"),
+                                free_energy=None, magnetization=None, force_al=None, tol=3e-7)
+
 # second eigensolver (all-band LOBPCG) must reproduce the PPCG results
 CASES["NiAl_B2_lobpcg"] = dict(text="eigensolver = lobpcg\n" + CASES["NiAl_B2"]["text"], free_energy=None, tol=2e-7)
 
@@ -100,6 +106,9 @@ REFERENCE = {
     "Al_fcc": {"free_energy": -241.922333544851},
     "NiAl_B2": {"free_energy": -1760.310786754092},
     "NiAl_B2_lobpcg": {"free_energy": -1760.310786754092},
+    "NiAl_B2_pbe": {"free_energy": -1763.634387933795},
+    "FeAl_forces_pbe": {"free_energy": -1515.621394585464, "magnetization": 1.11573263,
+                        "force_al": [-0.0261915559, -0.0198981485, 0.0133896651]},
     "FeAl_forces": {"free_energy": -1512.506028752653, "magnetization": 1.05260965,
                     "force_al": [-0.0184209509, -0.0141651253, 0.0096173705]},
 }

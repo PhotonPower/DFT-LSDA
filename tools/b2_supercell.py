@@ -57,6 +57,7 @@ def main():
     ap.add_argument("--moment-antisite", type=float, default=None, help="initial moment of a TM antisite atom")
     ap.add_argument("--smearing", default="cold")
     ap.add_argument("--width", type=float, default=0.01)
+    ap.add_argument("--xc", default="lda", choices=["lda", "pbe"], help="selects the PAW datasets (JTH LDA-PW or GGA-PBE)")
     ap.add_argument("--pseudo-dir", default="../../pseudos")
     ap.add_argument("--prefix", default=None)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="additional input keywords")
@@ -66,6 +67,7 @@ def main():
     atoms = build(args.tm, args.n, args.defect)
     prefix = args.prefix or args.output.rsplit(".", 1)[0].split("/")[-1]
     L = args.a * args.n
+    tag = "GGA_PBE" if args.xc == "pbe" else "LDA_PW"
     lines = [
         f"# B2 {args.tm}Al {args.n}x{args.n}x{args.n} supercell, defect: {args.defect}, a = {args.a} A",
         f"task       = {args.task}",
@@ -82,7 +84,7 @@ def main():
         key, value = kv.split("=", 1)
         lines.append(f"{key.strip():10s} = {value.strip()}")
     lines += ["units      = angstrom", "begin lattice", f"  {L:.10f} 0 0", f"  0 {L:.10f} 0", f"  0 0 {L:.10f}", "end",
-              "begin species", f"  {args.tm} {args.tm}.LDA_PW-JTH.xml", "  Al Al.LDA_PW-JTH.xml", "end", "begin atoms"]
+              "begin species", f"  {args.tm} {args.tm}.{tag}-JTH.xml", f"  Al Al.{tag}-JTH.xml", "end", "begin atoms"]
     for label, (x, y, z) in atoms:
         moment = ""
         if args.nspin == 2 and label.startswith(args.tm):

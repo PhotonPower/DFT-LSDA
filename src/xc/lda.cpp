@@ -1,5 +1,6 @@
 #include "xc/lda.hpp"
 
+#include <cctype>
 #include <cmath>
 
 namespace lsda {
@@ -70,10 +71,17 @@ void LSDA_PW92::evaluate(size_t n, const double* nup, const double* ndn, double*
   }
 }
 
+void XCFunctional::evaluate_gga(size_t, const double*, const double*, const double*, const double*, const double*,
+                                double*, double*, double*, double*, double*, double*) const {
+  fail("evaluate_gga called for the local functional '" + name() + "'");
+}
+
 std::unique_ptr<XCFunctional> make_xc(const std::string& name) {
-  if (name == "lda" || name == "lsda" || name == "pw92" || name == "lda_pw92" || name == "PW")
-    return std::make_unique<LSDA_PW92>();
-  fail("unknown xc functional '" + name + "' (available: pw92)");
+  std::string n;
+  for (char ch : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (n == "lda" || n == "lsda" || n == "pw92" || n == "lda_pw92" || n == "pw" || n == "lda/pw") return std::make_unique<LSDA_PW92>();
+  if (n == "pbe" || n == "gga" || n == "gga/pbe" || n == "gga_pbe") return std::make_unique<GGA_PBE>();
+  fail("unknown xc functional '" + name + "' (available: pw92, pbe)");
 }
 
 }  // namespace lsda

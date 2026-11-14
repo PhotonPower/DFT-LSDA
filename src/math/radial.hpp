@@ -19,6 +19,8 @@ struct RadialGrid {
   // Radial Hartree potential of the multipole density n(r) Y_L:
   //   v(r) = 4 pi/(2l+1) [ r^{-l-1} int_0^r n r'^{l+2} dr' + r^l int_r^R n r'^{1-l} dr' ],  R = r(npts-1)
   std::vector<double> hartree(int l, const std::vector<double>& n, int npts) const;
+  // df/dr at the first npts grid points (5-point differences in the index variable; f must have npts + 2 values)
+  std::vector<double> derivative(const std::vector<double>& f, int npts) const;
 };
 
 // 6-point Lagrange interpolation of samples f(0..n-1) at the fractional index x

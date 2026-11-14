@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -196,6 +197,71 @@ static void test_xc() {
   check(err < 1e-7, "v_xc = d e_xc / d n_sigma (finite differences)", err);
 }
 
+static void test_pbe() {
+  std::printf("PBE functional\n");
+  GGA_PBE pbe;
+  LSDA_PW92 lda;
+  // zero gradient: PBE reduces to LSDA
+  double err = 0.0;
+  for (double a : {1e-3, 0.05, 0.7, 4.0})
+    for (double b : {2e-3, 0.03, 0.7, 2.0}) {
+      const double z = 0.0;
+      double e1, v1a, v1b, e2, v2a, v2b, s1, s2, s3;
+      lda.evaluate(1, &a, &b, &e1, &v1a, &v1b);
+      pbe.evaluate_gga(1, &a, &b, &z, &z, &z, &e2, &v2a, &v2b, &s1, &s2, &s3);
+      err = std::max({err, std::abs(e1 - e2) / std::abs(e1), std::abs(v1a - v2a), std::abs(v1b - v2b)});
+    }
+  check(err < 1e-12, "PBE with zero gradient equals LSDA", err);
+  // exchange enhancement factor: unpolarized density, F_x(s) = 1 + kappa - kappa/(1 + mu s^2/kappa)
+  {
+    const double n = 0.3, s = 1.3, kf = std::cbrt(3 * pi * pi * n), g2 = std::pow(2 * kf * n * s, 2);
+    const double a = n / 2, q = g2 / 4, z = 0.0;
+    double e, va, vb, s1, s2, s3, e0;
+    pbe.evaluate_gga(1, &a, &a, &q, &q, &q, &e, &va, &vb, &s1, &s2, &s3);
+    // subtract correlation by evaluating at the same point through the exchange-free combination:
+    // exchange depends only on s_uu and s_dd, correlation only on the total gradient -> set s_ud = -q
+    const double mq = -q;
+    pbe.evaluate_gga(1, &a, &a, &q, &mq, &q, &e0, &va, &vb, &s1, &s2, &s3);  // total gradient zero: e0 = e_x F_x + e_c^LDA
+    double el, t1, t2;
+    lda.evaluate(1, &a, &a, &el, &t1, &t2);
+    const double ex_lda = -0.75 * std::cbrt(3 / pi) * std::pow(n, 4.0 / 3), mu = 0.06672455060314922 * pi * pi / 3;
+    const double fx = (e0 - (el - ex_lda)) / ex_lda;
+    err = std::abs(fx - (1 + 0.804 - 0.804 / (1 + mu * s * s / 0.804)));
+    check(err < 1e-12, "PBE exchange enhancement factor F_x(s)", err);
+    // correlation limits: H -> beta phi^3 t^2 for t -> 0 and e_c -> 0 for t -> infinity
+    const double small = 1e-10 * g2, big = 1e12 * g2, qs = small / 4, qb = big / 4;
+    double es, eb;
+    pbe.evaluate_gga(1, &a, &a, &z, &qs, &z, &es, &va, &vb, &s1, &s2, &s3);   // only s_ud: total gradient 2 qs
+    const double ks2 = 4 * kf / pi, tt = 2 * qs / (4 * ks2 * n * n);
+    err = std::abs((es - el) / (n * 0.06672455060314922 * tt) - 1.0);
+    check(err < 1e-5, "PBE correlation: H -> beta t^2 for small gradients", err);
+    pbe.evaluate_gga(1, &a, &a, &z, &qb, &z, &eb, &va, &vb, &s1, &s2, &s3);
+    err = std::abs(eb - ex_lda) / std::abs(el - ex_lda);
+    check(err < 1e-6, "PBE correlation vanishes for large gradients", err);
+  }
+  // all five partial derivatives against central differences
+  err = 0.0;
+  for (double a : {0.02, 0.4, 3.0})
+    for (double b : {0.01, 0.4, 1.0})
+      for (double g : {0.0, 0.3, 5.0}) {
+        const double x0[5] = {a, b, g * a * a * 3, g * a * b * 2, g * b * b * 4};  // n_up, n_dn, s_uu, s_ud, s_dd
+        double e, d[5];
+        pbe.evaluate_gga(1, &x0[0], &x0[1], &x0[2], &x0[3], &x0[4], &e, &d[0], &d[1], &d[2], &d[3], &d[4]);
+        for (int k = 0; k < 5; ++k) {
+          if (k >= 2 && g == 0.0) continue;  // one-sided at zero gradient
+          double xp[5], xm[5], ep, em, t[5];
+          for (int j = 0; j < 5; ++j) xp[j] = xm[j] = x0[j];
+          const double h = 1e-5 * std::max(std::abs(x0[k]), 1e-3);
+          xp[k] += h;
+          xm[k] -= h;
+          pbe.evaluate_gga(1, &xp[0], &xp[1], &xp[2], &xp[3], &xp[4], &ep, &t[0], &t[1], &t[2], &t[3], &t[4]);
+          pbe.evaluate_gga(1, &xm[0], &xm[1], &xm[2], &xm[3], &xm[4], &em, &t[0], &t[1], &t[2], &t[3], &t[4]);
+          err = std::max(err, std::abs((ep - em) / (2 * h) - d[k]) / std::max(std::abs(d[k]), 1e-3));
+        }
+      }
+  check(err < 1e-5, "PBE derivatives (finite differences)", err);
+}
+
 static void test_fft_linalg() {
   std::printf("FFT and linear algebra\n");
   FFT3D fft(12, 10, 9);
@@ -294,11 +360,12 @@ static void test_symmetry() {
   check(kf.size() == 29, "fcc 8x8x8 Gamma-centred grid -> 29 irreducible k-points", static_cast<double>(kf.size()));
 }
 
-static void test_paw(const std::string& dir) {
-  std::printf("PAW datasets\n");
-  LSDA_PW92 xc;
+static void test_paw(const std::string& dir, bool gga) {
+  std::printf(gga ? "PAW datasets (PBE)\n" : "PAW datasets (LDA)\n");
+  const std::unique_ptr<XCFunctional> xcp = make_xc(gga ? "pbe" : "pw92");
+  const XCFunctional& xc = *xcp;
   for (const char* el : {"Al", "Fe", "Ni"}) {
-    const PawSetup s = PawSetup::load(dir + "/" + el + ".LDA_PW-JTH.xml");
+    const PawSetup s = PawSetup::load(dir + "/" + el + (gga ? ".GGA_PBE-JTH.xml" : ".LDA_PW-JTH.xml"));
     check(std::abs(s.check_core_charge - s.n_core) < 1e-6, std::string(el) + ": core charge", std::abs(s.check_core_charge - s.n_core));
     check(s.check_duality < 5e-5, std::string(el) + ": <p_i|phi~_j> = delta_ij", s.check_duality);
     // neutrality of the reference atom: sqrt(4 pi) Q_00 + pseudo valence + pseudo core charge = 0
@@ -330,7 +397,7 @@ static void test_paw(const std::string& dir) {
         err = std::max(err, std::abs(fd - dH[sp](i, j)) / std::max(1.0, std::abs(fd)));
         asym = std::max(asym, std::abs(dH[sp](i, j) - dH[sp](j, i)));
       }
-    check(err < 2e-6, std::string(el) + ": dH_ij = dE/dD_ij (finite differences)", err);
+    check(err < (gga ? 2e-5 : 2e-6), std::string(el) + ": dH_ij = dE/dD_ij (finite differences)", err);
     check(asym < 1e-10, std::string(el) + ": dH symmetric", asym);
     // spin-unpolarized path consistent with the polarized one
     RMatrix Dt = D, dH1[1], Dh[2] = {D, D}, dH2[2];
@@ -459,11 +526,13 @@ int main(int argc, char** argv) {
     test_special();
     test_radial();
     test_xc();
+    test_pbe();
     test_fft_linalg();
     test_symmetry();
     test_occupations_mixer();
     test_eigensolvers(dir);
-    test_paw(dir);
+    test_paw(dir, false);
+    test_paw(dir, true);
   } catch (const std::exception& e) {
     std::printf("exception: %s\n", e.what());
     return 2;

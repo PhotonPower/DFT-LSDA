@@ -128,7 +128,7 @@ std::vector<Vec3> Calculation::forces() {
 // Omega -> Omega (1 + tr eps), structure-factor phases unchanged. With N(G) = Omega * n(G):
 //   kinetic      : - sum_n f_n sum_G |c|^2 T'(q^2/2) q_a q_b   (T' = 1 without cutoff smoothing)
 //   Hartree      : - delta_ab E_H + Omega/(4 pi) sum_G |v_H|^2 G_a G_b + sum_G Re[v_H^* dN_comp/d eps]
-//   xc           :   delta_ab (E_xc - int v_xc n~)
+//   xc           :   delta_ab (E_xc - int v_xc n~) - int sum_s (de/d grad n_s)_a (grad n_s)_b   (second term: GGA)
 //   zero pot.    : - delta_ab E_zero + sum_G Re[n~^* dVbar/d eps]
 //   pseudo core  :   sum_G Re[v~^* dN_core/d eps]
 //   projectors   :   sum_n f_n sum_ij (dH_ij - eps_n dS_ij) d(P*_ni P_nj)/d eps
@@ -259,7 +259,7 @@ Mat3 Calculation::stress() {
       }
     }
   }
-  for (int c = 0; c < 6; ++c) sig[c] += loc[c];
+  for (int c = 0; c < 6; ++c) sig[c] += loc[c] - gga_stress_[c];  // gradient-corrected functionals: - int (de/d grad n)_a (grad n)_b
   const double diag = -f_pot_.hartree - f_pot_.zero + f_pot_.xc - vxc_n_ + diag_proj;
   for (int c = 0; c < 3; ++c) sig[c] += diag;
 
