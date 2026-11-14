@@ -90,7 +90,13 @@ end
 | `ecut_dense` / `dense_factor` | 8·`ecut` | Cutoff der dichten G-Kugel (≥ 4·`ecut`; ab Faktor 6 auf < 1e-6 Ha konvergiert) |
 | `kpoints`, `kshift` | `1 1 1`, `0 0 0` | Monkhorst-Pack-Gitter, Verschiebung (0 oder 0.5) |
 | `symmetry` | `true` | Raumgruppensymmetrie verwenden |
-| `xc` | aus den Datensätzen | `pw92` (LSDA) oder `pbe`; ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
+| `xc` | aus den Datensätzen | `pw92` (LSDA), `pbe`, Hybridfunktionale `pbe0`, `hse06` oder `hf` (Hartree-Fock); ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
+| `exx_fraction` | 0.25 (`hf`: 1) | Anteil des exakten Austauschs |
+| `exx_screening` | 0.11 (`hse06`), 0 (`pbe0`) | Abschirmparameter ω in 1/Bohr (VASP-Konvention 0,2 Å⁻¹ = 0.1058) |
+| `exx_tol` | 1e-6 (`scf`), 1e-9 (Aufgaben mit Kräften) | Konvergenz der äußeren Austausch-Schleife (Ha) |
+| `exx_max_iter` | 30 | maximale Zahl äußerer Iterationen |
+| `exx_history` | 4 | Anderson-Mischung der Austauschoperatoren über so viele äußere Iterationen (1 = keine) |
+| `exx_singularity` | `auto` | Coulomb-Singularität ohne Abschirmung: `truncated` (kugelförmig abgeschnittener Kern), `auxiliary` (Hilfsfunktion nach Gygi-Baldereschi) oder `auto` |
 | `nspin` | 1 | 2 = spinpolarisiert (kollinear) |
 | `noncollinear` | `false` | zweikomponentige Spinoren, Magnetisierung als Vektorfeld; Atomzeilen dann `<Label> x y z mx my mz` (Startmoment als Vektor in µB) |
 | `nbands` | automatisch | Zahl der Bänder |
@@ -191,6 +197,44 @@ Einschränkungen des jetzigen Stands: nur LSDA (kein PBE), keine Symmetrie und k
 k-Gitter), keine Spin-Bahn-Kopplung, keine Zwangsbedingungen an die Momentrichtungen (sie sind frei und
 können während des SCF drehen); Spannungstensor, Zustandsdichte, Bandstruktur und Wellenfunktions-Checkpoint
 sind in diesem Modus nicht verfügbar. Kräfte, Relaxation, DFT+U und MPI funktionieren.
+
+## Hybridfunktionale
+
+`xc = pbe0`, `hse06` oder `hf` mischt exakten (Fock-)Austausch bei:
+
+* PBE0: E_xc = a E_x^Fock + (1 − a) E_x^PBE + E_c^PBE, a = 0,25
+* HSE06: E_xc = a E_x^Fock,SR(ω) + E_x^PBE − a E_x^PBE,SR(ω) + E_c^PBE, a = 0,25, ω = 0,11/Bohr. Der
+  kurzreichweitige PBE-Austausch verwendet das Austauschloch-Modell von Henderson, Janesko und Scuseria (HJS);
+  die Zahlen unterscheiden sich daher geringfügig von Programmen mit dem ursprünglichen ωPBE-Loch.
+* `hf`: nur exakter Austausch, keine Korrelation (für Tests).
+
+**PAW:** Die Paardichten ψ̃*_m ψ̃_n tragen Kompensationsladungen (alle Multipole bis 2·l_max); der atomzentrierte
+Rest hängt nur von den Dichtematrizen ab und steht im On-site-Term: Valenz-Valenz über den Coulomb-Tensor der
+Datensätze, Rumpf-Valenz über die Matrix `exact_exchange_X_matrix`, Rumpf-Rumpf als Konstante. Für HSE wird der
+langreichweitige Anteil erf(ωr)/r des Valenz-Valenz-Terms numerisch abgezogen.
+
+**Algorithmus:** Der Fock-Operator wird nicht im Eigenlöser angewandt, sondern einmal pro äußerer Iteration für alle
+Bänder ausgewertet und als adaptiv komprimierter Operator (ACE, Lin 2016) V = −ξξ^H gespeichert; die innere Schleife
+ist ein gewöhnlicher SCF-Zyklus mit festem Operator. Die äußere Schleife ist eine Fixpunktiteration, die für Metalle
+und Magnete langsam konvergiert; nahe der Konvergenz wird sie deshalb durch eine Anderson-Mischung der Operatoren der
+letzten Iterationen beschleunigt (`exx_history`). Der Lauf beginnt mit einer PBE-Rechnung (bei `hf` mit dem
+Funktional der Datensätze). Nach jeder Atombewegung beginnt die Abfolge PBE → Hybrid neu.
+
+Einschränkungen des jetzigen Stands:
+
+* keine Symmetrie, volles k-Gitter (der Austausch koppelt alle k-Punkte); der Aufwand wächst mit N_k² · N_Bänder²
+* kein Spannungstensor (also keine Zellrelaxation), keine Bandstruktur entlang eines Pfades, kein nichtkollinearer
+  Magnetismus; Kräfte, Relaxation, NEB, Phononen, MD und DFT+U funktionieren
+* HSE: Rumpf-Valenz- und Rumpf-Rumpf-Austausch werden unabgeschirmt aus dem Datensatz übernommen (die Datensätze
+  enthalten keine Rumpfzustände). Der vernachlässigte langreichweitige Anteil ist klein (Größenordnung
+  (4ω³/3√π)·|⟨v|r|c⟩|², unter 1 mHa pro Atom) und weitgehend konstant, aber nicht null.
+* Kräfte haben einen Fehler erster Ordnung in der Konvergenz der äußeren Schleife (Energien: zweiter Ordnung); für
+  Aufgaben mit Kräften ist `exx_tol` deshalb auf 1e-9 voreingestellt (Kraftfehler dann einige 1e-6 Ha/Bohr).
+* Die Kompensationsladungen der Paardichten werden im reziproken Raum aufgebaut (Aufwand ∝ Atome × Multipole ×
+  G-Vektoren pro Bandpaar); für große Superzellen ist das der teuerste Teil und noch nicht optimiert.
+* Mit MPI werden die besetzten Orbitale aller k-Punkte auf alle Prozesse repliziert; dieser Pfad ist nicht getestet.
+* PBE0 ohne Abschirmung ist für Metalle wegen der Singularität an der Fermi-Fläche wenig geeignet (langsame
+  k-Konvergenz); für NiAl/FeAl ist HSE06 die sinnvolle Wahl.
 
 ## DFT+U
 
@@ -336,11 +380,11 @@ Siehe `VALIDATION.md` für die Zahlen. Kurzfassung der Prüfungen, die der Code 
 ```
 src/base      Typen, Timer, lineare Algebra (BLAS/LAPACK), FFT, MPI-Schicht, Dualzahlen
 src/math      Kugelflächenfunktionen, Gaunt-Koeffizienten, Bessel-Transformation, Radialgitter
-src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
+src/xc        XC-Funktionale (Schnittstelle XCFunctional; LSDA-PW92, PBE, PBE0/HSE-Anteile, Hartree-Fock)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
-              Relaxation, NEB, Phononen, elastische Konstanten, Molekulardynamik
+              exakter Austausch (exchange.cpp), Relaxation, NEB, Phononen, elastische Konstanten, Molekulardynamik
 src/io        Eingabe, JSON-Ausgabe
 tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik, Größen-Extrapolation, quasiharmonische Näherung
 tests         Unit- und Regressionstests

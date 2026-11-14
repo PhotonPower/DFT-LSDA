@@ -52,6 +52,8 @@ class Hamiltonian {
   void block_multiply(const CMatrix& P, CMatrix* DP, CMatrix* SP) const;  // dH P and/or dS P
   void add_nonlocal(const CMatrix& T, cplx* r, int nb) const;             // r += beta T
   int nproj() const { return spinor_ ? 2 * proj_.nproj : proj_.nproj; }
+  // exact exchange in compressed form, V_x = -sum_t c_t xi_t xi_t^H (hybrid functionals); part of apply_local
+  void add_exchange(const CMatrix* xi, double coefficient) { xi_.push_back({xi, coefficient}); }
   mutable long n_applications = 0;
 
  private:
@@ -62,6 +64,7 @@ class Hamiltonian {
   std::vector<std::array<const RMatrix*, 4>> dH_;  // per atom
   std::vector<const RMatrix*> dS_;
   bool spinor_ = false;
+  std::vector<std::pair<const CMatrix*, double>> xi_;
 };
 
 }  // namespace lsda

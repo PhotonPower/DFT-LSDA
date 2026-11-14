@@ -333,12 +333,86 @@ def noncollinear_test(lsda, pseudo, tmp):
     return 0 if ok else 1
 
 
+HYBRID_H = """task = scf
+xc = hf
+ecut = 15
+kpoints = 1 1 1
+nspin = 2
+nbands = 3
+smearing = fermi-dirac
+width = 0.002
+scf_tol = 1e-9
+exx_tol = 1e-5
+units = bohr
+scale = 12.0
+begin lattice
+ 1 0 0
+ 0 1 0
+ 0 0 1
+end
+begin species
+ H H.LDA_PW-JTH.xml
+end
+begin atoms
+ H 0 0 0 1.0
+end
+"""
+
+HYBRID_AL = """task = forces
+xc = pbe0
+ecut = 10
+kpoints = 2 1 1
+smearing = fermi-dirac
+width = 0.02
+scf_tol = 1e-10
+units = bohr
+scale = 1.0
+begin lattice
+ 5.4 0 0
+ 0 5.0 0
+ 0 0.3 9.0
+end
+begin species
+ Al Al.GGA_PBE-JTH.xml
+end
+begin atoms
+ Al 0 0 0
+ Al 0.45 0.55 0.52
+end
+"""
+
+
+def hybrid_test(lsda, pseudo, tmp):
+    """Hybrid functionals: the Hartree-Fock energy of the hydrogen atom is -1/2 Ha (exact cancellation of the
+    self-interaction); PBE0 energy and force of a small Al cell against stored values (the force was verified by
+    finite differences of the energy)."""
+    failures = 0
+    res = {}
+    for name, text in (("h_hf", HYBRID_H), ("al_pbe0", HYBRID_AL)):
+        with open(os.path.join(tmp, name + ".in"), "w") as f:
+            f.write(f"prefix = {name}\npseudo_dir = {pseudo}\ncheckpoint_wfc = false\n" + text)
+        out = subprocess.run([lsda, name + ".in"], cwd=tmp, capture_output=True, text=True)
+        if out.returncode != 0:
+            print(f"[FAIL] hybrid test, run {name}: exit code {out.returncode}\n{out.stdout[-800:]}{out.stderr}")
+            return 1
+        res[name] = json.load(open(os.path.join(tmp, name + ".json")))
+    e_h = res["h_hf"]["free_energy"]
+    ok = abs(e_h + 0.5) < 1e-3
+    print(f"[{' ok ' if ok else 'FAIL'}] Hartree-Fock hydrogen atom: E = {e_h:.6f} Ha (exact -0.5)")
+    failures += 0 if ok else 1
+    e_al, f_al = res["al_pbe0"]["free_energy"], res["al_pbe0"]["atoms"][1]["force"][0]
+    ok = abs(e_al - (-485.943851975)) < 2e-7 and abs(f_al - (-0.0121146)) < 2e-5
+    print(f"[{' ok ' if ok else 'FAIL'}] PBE0, two Al atoms: E = {e_al:.9f} Ha, force {f_al:.7f} Ha/bohr (finite difference -0.0121146)")
+    failures += 0 if ok else 1
+    return failures
+
+
 def main():
     lsda, pseudo = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     show = "--print" in sys.argv
     if "--only" in sys.argv:  # run a single group of self-contained tests
         which = sys.argv[sys.argv.index("--only") + 1]
-        groups = {"noncollinear": noncollinear_test, "stress": stress_tests, "relax": relax_and_restart}
+        groups = {"noncollinear": noncollinear_test, "hybrid": hybrid_test, "stress": stress_tests, "relax": relax_and_restart}
         with tempfile.TemporaryDirectory() as tmp:
             failures = groups[which](lsda, pseudo, tmp)
         print("PASSED" if failures == 0 else "FAILED")
@@ -380,6 +454,7 @@ def main():
             failures += relax_and_restart(lsda, pseudo, tmp)
             failures += stress_tests(lsda, pseudo, tmp)
             failures += noncollinear_test(lsda, pseudo, tmp)
+            failures += hybrid_test(lsda, pseudo, tmp)
     if not show:
         print("ALL REGRESSION TESTS PASSED" if failures == 0 else f"{failures} REGRESSION TEST(S) FAILED")
     return 1 if failures else 0

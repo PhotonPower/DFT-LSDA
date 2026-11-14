@@ -146,6 +146,16 @@ Input read_input(const std::string& path) {
   take("eig_tol_factor", [&](const std::string& v) { p.eig_tol_factor = to_double(v, "eig_tol_factor"); });
   take("eig_tol_max", [&](const std::string& v) { p.eig_tol_max = to_double(v, "eig_tol_max"); });
   take("paw_ntheta", [&](const std::string& v) { p.paw_ntheta = static_cast<int>(to_double(v, "paw_ntheta")); });
+  take("exx_fraction", [&](const std::string& v) { p.exx_fraction = to_double(v, "exx_fraction"); });
+  take("exx_screening", [&](const std::string& v) { p.exx_screening = to_double(v, "exx_screening"); });
+  bool exx_tol_given = false;
+  take("exx_tol", [&](const std::string& v) {
+    p.exx_tol = to_double(v, "exx_tol");
+    exx_tol_given = true;
+  });
+  take("exx_max_iter", [&](const std::string& v) { p.exx_max_iter = static_cast<int>(to_double(v, "exx_max_iter")); });
+  take("exx_history", [&](const std::string& v) { p.exx_history = static_cast<int>(to_double(v, "exx_history")); });
+  take("exx_singularity", [&](const std::string& v) { p.exx_singularity = lower(v); });
   take("max_seconds", [&](const std::string& v) { p.max_seconds = to_double(v, "max_seconds"); });
   take("checkpoint_wfc", [&](const std::string& v) { p.checkpoint_wfc = to_bool(v, "checkpoint_wfc"); });
   take("seed", [&](const std::string& v) { p.seed = static_cast<unsigned>(to_double(v, "seed")); });
@@ -175,6 +185,7 @@ Input read_input(const std::string& path) {
   take("md_temperature", [&](const std::string& v) { inp.md.temperature = to_double(v, "md_temperature"); });
   take("md_thermostat", [&](const std::string& v) { inp.md.thermostat = lower(v); });
   take("md_tau", [&](const std::string& v) { inp.md.tau_fs = to_double(v, "md_tau"); });
+  if (inp.task != "scf" && !exx_tol_given) p.exx_tol = 1e-9;  // hybrid functionals: forces need a tighter outer loop
   if (inp.task == "md") p.symmetry = false;  // the trajectory does not keep the symmetry of the start structure
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff

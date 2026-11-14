@@ -303,6 +303,38 @@ umverteilt werden. Thermostat und Neustart sind **nicht** getestet; längere Tra
 * Eine echt nichtkollineare Konfiguration (verkantete Momente) wurde **nicht** gerechnet; geprüft ist dort nur
   der Hamiltonoperator gegen die dichte Diagonalisierung.
 
+## 7k. Hybridfunktionale
+
+* **Wasserstoffatom, Hartree-Fock** (Kasten 12 Bohr, 15 Ha, abgeschnittener Coulomb-Kern): E = −0,50030 Ha
+  (exakt −0,5 Ha; der Austausch hebt die Selbstwechselwirkung auf). Die Abweichung von −0,3 mHa stammt aus dem
+  kleinen Kasten (Bilddichten innerhalb des Abschneideradius 7,4 Bohr) und der PAW-Basis.
+* **Rumpf-Valenz-Matrix der Datensätze** (Unit-Test): Die Rumpfzustände werden aus dem rekonstruierten
+  LDA-Atompotential neu berechnet (nichtrelativistische radiale Schrödinger-Gleichung) und Σ_c (ic|ci) mit dem
+  Datensatz verglichen: Al 0,4 %, Fe 1,8 % (Restabweichung: skalarrelativistische Rumpfzustände im Datensatz).
+  Damit sind Vorzeichen und Faktor der Konvention festgelegt (E = −Σ_σ Σ_ij D^σ_ij X_ij mit X > 0).
+* **Al-Atom, Hartree-Fock** (Kasten 13 Bohr, 12 Ha, nur Plausibilität): −242,33 Ha nach 8 äußeren Iterationen, noch
+  nicht konvergiert (offene p-Schale). Dirac-Fock-Literaturwert −242,33 Ha (die Datensätze sind
+  skalarrelativistisch; der nichtrelativistische HF-Wert −241,88 Ha ist nicht vergleichbar). Kein scharfer Test.
+* **On-site-Austausch** (Unit-Test, Fe): dH = dE/dD gegen finite Differenzen 4e-10 (HF und HSE06), spinentarteter
+  Grenzfall exakt; abgeschirmter Coulomb-Tensor → unabgeschirmter für ω → 0 (5e-10).
+* **HJS-Austauschfaktor** (Unit-Test): bei ω = 0 gleich dem PBE-Faktor auf 9e-5 (s ≤ 3); bei s = 0 gleich dem
+  exakten kurzreichweitigen LDA-Austausch auf 3e-3 (Modell-Loch, wie in der Literatur); Ableitungen 1e-10.
+* **Kräfte gegen finite Differenzen der Energie**
+  * PBE0, zwei Al-Atome, 2×1×1 k-Punkte: analytisch −0,0121156, finite Differenz −0,0121146 Ha/Bohr (`exx_tol`
+    1e-9). Der Kraftfehler ist erster Ordnung in der Konvergenz der äußeren Schleife: 5,7e-4 (`exx_tol` 1e-5),
+    3,9e-5 (1e-7), ~1e-6 (1e-9).
+  * HSE06, FeAl spinpolarisiert, 2×1×1 k-Punkte: analytisch −0,0061257, finite Differenz −0,0061288 Ha/Bohr
+    (`exx_tol` 1e-8; die Energien der Differenz stammen aus der unbeschleunigten Schleife mit gleichem `exx_tol`).
+* **Äußere Schleife:** ohne Mischung 19 Iterationen (Al, 1e-9) bzw. Restfehler-Faktor 0,75 pro Iteration (FeAl);
+  mit Anderson-Mischung 9 bzw. 11 Iterationen bei gleicher Energie (Unterschied 2e-9 bzw. 6e-9 Ha). Wird die
+  Mischung schon in der frühen, nichtlinearen Phase benutzt, lief FeAl in einen metastabilen Zustand
+  (M = 1,51 µB, 22 mHa höher); sie setzt deshalb erst unterhalb einer Schwelle der Energieänderung ein.
+* **Nicht geprüft:** Vergleich mit einem Referenzcode (HSE06-Gitterkonstanten, Bandlücken), die
+  Hilfsfunktions-Behandlung der Singularität über einen Durchlauftest hinaus (H-Atom im 12-Bohr-Kasten: −0,5034 Ha;
+  für isolierte Systeme konvergiert sie nur algebraisch mit der Kastengröße), k-Punkt-Konvergenz,
+  MPI, Systeme mit mehr als zwei Atomen. Die Vernachlässigung des langreichweitigen Rumpf-Valenz-Austauschs bei HSE
+  ist nur abgeschätzt, nicht gemessen.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

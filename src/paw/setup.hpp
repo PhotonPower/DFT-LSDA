@@ -46,6 +46,15 @@ class PawSetup {
   std::vector<double> Delta_Lij;  // multipole moments Delta(L, i, j), index (L*ni + i)*ni + j
   double Delta0 = 0;              // constant part of Q_00
   double E0 = 0;                  // constant energy
+  // exact exchange (hybrid functionals): valence-core matrix X_ij and core-core energy of the dataset;
+  //   dE_x = -a sum_s [ sum_ijkl D^s_ik D^s_jl Cx_ij,kl + sum_ij D^s_ij X_ij ] + a E_x^core-core
+  // Cx = C for the full Coulomb kernel; for a screened kernel erfc(omega r)/r the long-range part is removed.
+  RMatrix X;
+  double exx_core = 0;
+  bool has_exx_data = false;
+  RMatrix Cx;
+  double exx_omega = -1.0;        // screening parameter Cx was built for (< 0: not built)
+  void prepare_exchange(double omega);
   double delta(int L, int i, int j) const { return Delta_Lij[(static_cast<size_t>(L) * ni + i) * ni + j]; }
 
   // Compensation multipoles Q_L = Delta0 delta_L0 + sum_ij Delta_Lij D_ij (D summed over spin)
@@ -96,6 +105,9 @@ class PawSetup {
   struct GauntEntry { int L, q; double g; };
   std::vector<std::vector<GauntEntry>> gaunt_ij_;   // per (i*ni + j)
   void compute_onsite_tensors();
+  std::vector<RMatrix> radial_coulomb_;             // R_l(q, p): radial Coulomb integrals of the pair densities
+  std::vector<std::vector<double>> delta_lq_;       // multipole moments of the radial pair densities
+  RMatrix assemble_coulomb(const std::vector<RMatrix>& R) const;
 };
 
 }  // namespace lsda

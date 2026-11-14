@@ -6,6 +6,7 @@
 //                A = beta/gamma / (exp(-eps_c/(gamma phi^3)) - 1),  t = |grad n| / (2 phi k_s n)
 // The exchange derivatives are coded analytically; the correlation part is differentiated with
 // dual numbers (variables n_up, n_dn, |grad n|^2).
+#include <algorithm>
 #include <cmath>
 
 #include "base/dual.hpp"
@@ -57,7 +58,52 @@ T pbe_correlation(const T& a, const T& b, const T& g2) {
   return rho * (eps + H);
 }
 
+// Short-range PBE exchange enhancement factor of Henderson, Janesko and Scuseria (HJS), Eqs. (37)-(43) of
+// J. Chem. Phys. 128, 194105 (2008), with the parameters of the PBE exchange hole.
+template <class T>
+T hjs_enhancement(const T& s, const T& nu) {
+  const double A = 0.757211, B = -0.106364, C = -0.118649, D = 0.609650;
+  static const double a[6] = {0.0159941, 0.0852995, -0.160368, 0.152645, -0.0971263, 0.0422061};  // s^2 ... s^7
+  static const double b[9] = {5.33319, -12.4780, 11.0988, -5.11013, 1.71468, -0.610380, 0.307555, -0.0770547, 0.0334840};
+  const T s2 = s * s;
+  T num = s * a[5] + a[4];
+  for (int i = 3; i >= 0; --i) num = num * s + a[i];
+  num = num * s2;
+  T den = s * b[8] + b[7];
+  for (int i = 6; i >= 0; --i) den = den * s + b[i];
+  den = den * s + 1.0;
+  const T H = num / den;
+  const T zeta = s2 * H, eta = zeta + A, lam = zeta + D;
+  const T nu2 = nu * nu;
+  const T sl_nu = sqrt(lam + nu2), sz_nu = sqrt(zeta + nu2), se_nu = sqrt(eta + nu2);
+  const T chi = nu / sl_nu, chi2 = chi * chi, chi3 = chi2 * chi, chi5 = chi3 * chi2;
+  const T Fbar = 1.0 - s2 / (27.0 * C * (1.0 + 0.25 * s2)) - zeta / (2.0 * C);
+  const T lam2 = lam * lam, lam3 = lam2 * lam, lam72 = lam3 * sqrt(lam);
+  const T EG = -0.4 * C * Fbar * lam - (4.0 / 15.0) * B * lam2 - 1.2 * A * lam3 - 0.8 * std::sqrt(pi) * lam72 -
+               2.4 * lam72 * (sqrt(zeta) - sqrt(eta));
+  return A - (4.0 / 9.0) * B * (1.0 - chi) / lam - (4.0 / 9.0) * C * Fbar * (1.0 - 1.5 * chi + 0.5 * chi3) / lam2 -
+         (8.0 / 9.0) * EG * (1.0 - 1.875 * chi + 1.25 * chi3 - 0.375 * chi5) / lam3 + 2.0 * nu * (sz_nu - se_nu) +
+         2.0 * zeta * log((nu + sz_nu) / (nu + sl_nu)) - 2.0 * eta * log((nu + se_nu) / (nu + sl_nu));
+}
+
 }  // namespace
+
+double sr_pbe_enhancement(double s, double nu, double* dF_ds, double* dF_dnu) {
+  // the model is used for s <= 8 (beyond: constant in s; such gradients occur only in density tails)
+  const double s_max = 8.0, s_min = 1e-7;
+  const bool capped = s > s_max;
+  using D2 = Dual<2>;
+  const D2 F = hjs_enhancement(D2::variable(std::clamp(s, s_min, s_max), 0), D2::variable(nu, 1));
+  if (dF_ds) *dF_ds = capped ? 0.0 : F.d[0];
+  if (dF_dnu) *dF_dnu = F.d[1];
+  return F.v;
+}
+
+std::string GGA_PBE::name() const {
+  if (exx_ == 0.0) return "GGA (Perdew-Burke-Ernzerhof)";
+  if (omega_ == 0.0) return strf("hybrid PBE0 type (%.4g exact exchange + PBE)", exx_);
+  return strf("hybrid HSE type (%.4g screened exact exchange, omega = %.4g/bohr, HJS short-range PBE exchange)", exx_, omega_);
+}
 
 void GGA_PBE::evaluate_gga(size_t n, const double* nup, const double* ndn, const double* suu, const double* sud,
                            const double* sdd, double* exc, double* vup, double* vdn, double* vsuu, double* vsud,
@@ -84,9 +130,21 @@ void GGA_PBE::evaluate_gga(size_t n, const double* nup, const double* ndn, const
       const double r13 = std::cbrt(r2), r43 = r2 * r13;
       const double s2 = g2 / (4.0 * kf2 * r43 * r43);
       const double den = 1.0 + pbe_mu * s2 / pbe_kappa;
-      const double F = 1.0 + pbe_kappa - pbe_kappa / den, dF = pbe_mu / (den * den);  // dF/d(s^2)
+      double F = 1.0 + pbe_kappa - pbe_kappa / den, dF = pbe_mu / (den * den);  // dF/d(s^2)
+      double nu_dF = 0.0;  // nu dF/dnu (hybrid with screened exchange)
+      if (exx_ != 0.0 && omega_ == 0.0) {
+        F *= 1.0 - exx_;
+        dF *= 1.0 - exx_;
+      } else if (exx_ != 0.0) {  // subtract the fraction of short-range exchange that is treated exactly
+        const double sv = std::sqrt(s2), nu = omega_ / (std::sqrt(kf2) * r13);
+        double fs, fnu;
+        const double Fsr = sr_pbe_enhancement(sv, nu, &fs, &fnu);
+        F -= exx_ * Fsr;
+        dF -= exx_ * fs / (2.0 * std::max(sv, 1e-7));
+        nu_dF = -exx_ * nu * fnu;
+      }
       e += 0.5 * ax * r43 * F;
-      vn[s] = ax * r13 * ((4.0 / 3.0) * F - (8.0 / 3.0) * s2 * dF);
+      vn[s] = ax * r13 * ((4.0 / 3.0) * F - (8.0 / 3.0) * s2 * dF - (1.0 / 3.0) * nu_dF);
       vs[s] = 0.5 * ax * dF / (kf2 * r43);
     }
     // ---- correlation ----------------------------------------------------------------------------

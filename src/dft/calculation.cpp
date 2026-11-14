@@ -38,8 +38,22 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
       LSDA_CHECK(from_data == sp.setup.xc_name, "PAW datasets were generated with different xc functionals");
     }
     if (p_.xc.empty()) p_.xc = from_data;
-    xc_ = make_xc(p_.xc);
-    if (!from_data.empty() && make_xc(from_data)->name() != xc_->name() && p_.verbosity > 0)
+    xc_ = make_xc(p_.xc, p_.exx_fraction, p_.exx_screening);
+    hybrid_ = xc_->exx_fraction() != 0.0;
+    std::string semilocal = xc_->name();
+    if (hybrid_) {
+      // semilocal functional of the start phase: the parent GGA, for Hartree-Fock the functional of the datasets
+      const std::string start = xc_->is_gga() ? "pbe" : (from_data.empty() ? "pw92" : from_data);
+      xc_other_ = make_xc(start);
+      semilocal = xc_other_->name();
+      exx_active_ = true;
+      LSDA_CHECK(!noncol_, "hybrid functionals are not implemented for non-collinear magnetism");
+      for (Species& sp : c_.species) {
+        LSDA_CHECK(sp.setup.has_exx_data, "PAW dataset of " + sp.name + " contains no exact-exchange data");
+        sp.setup.prepare_exchange(xc_->exx_screening());
+      }
+    }
+    if (!from_data.empty() && make_xc(from_data)->name() != semilocal && p_.verbosity > 0)
       logf("\n  WARNING: xc functional '%s' differs from the one of the PAW datasets (%s)\n", p_.xc.c_str(), from_data.c_str());
   }
   smearing_ = parse_smearing(p_.smearing);
@@ -58,8 +72,9 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   LSDA_CHECK(!(noncol_ && xc_->is_gga()), "non-collinear magnetism is implemented for the LSDA only");
   LSDA_CHECK(!(noncol_ && p_.fixed_moment), "fixed_moment is not available for non-collinear calculations");
   // spin rotations are not part of the symmetry analysis: non-collinear runs use no symmetry and no time reversal
-  ops_ = find_symmetry(c_, p_.symmetry && !noncol_);
-  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_, &tetra_.map, !noncol_);
+  // exact exchange couples all k-points of the full grid: hybrid runs use no symmetry either
+  ops_ = find_symmetry(c_, p_.symmetry && !noncol_ && !hybrid_);
+  kpts_ = make_kpoints(p_.kgrid, p_.kshift, ops_, &tetra_.map, !noncol_ && !hybrid_);
   for (int d = 0; d < 3; ++d) tetra_.n[d] = p_.kgrid[d];
   tetra_.B = c_.B;
   for (const KPoint& k : kpts_) kweight_.push_back(k.weight);
@@ -170,6 +185,7 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
 
   setup_structure();
   setup_mixer();
+  if (hybrid_) setup_exchange();
   init_wavefunctions();
   init_density();
 }
@@ -359,6 +375,9 @@ void Calculation::init_density() {
 // rho <- rho - sum_a n_atom(r - R_a_old) + sum_a n_atom(r - R_a_new); wavefunctions and density
 // matrices are kept as start values.
 void Calculation::move_atoms(const std::vector<Vec3>& frac) {
+  exx_ready_ = false;  // hybrid functionals: the exchange operators belong to the old positions
+  exx_hist_.clear();
+  exx_coef_.clear();
   const int nat = c_.natoms(), ng = gs_.ng;
   LSDA_CHECK(static_cast<int>(frac.size()) == nat, "move_atoms: wrong number of positions");
   std::vector<Vec3> r_old(nat), r_new(nat);
@@ -718,12 +737,16 @@ Hamiltonian Calculation::hamiltonian(int ik, int s, const Projectors& proj) cons
   }
   std::vector<const RMatrix*> dh(nat);
   for (int a = 0; a < nat; ++a) dh[a] = &dH_[a][s];
-  return Hamiltonian(basis_[ik], fft_c_, vcoarse_[s].data(), proj, std::move(dh), std::move(ds));
+  Hamiltonian h(basis_[ik], fft_c_, vcoarse_[s].data(), proj, std::move(dh), std::move(ds));
+  if (exx_active_)
+    for (size_t i = 0; i < exx_hist_.size(); ++i)
+      if (exx_coef_[i] != 0.0) h.add_exchange(&exx_hist_[i].ace[static_cast<size_t>(ik) * nspin_ + s], exx_coef_[i]);
+  return h;
 }
 
 void Calculation::solve_bands(double tol, int max_iter, double& max_residual, int& not_converged) {
   ScopedTimer timer("eigensolver");
-  const int nk = static_cast<int>(kpts_.size()), nat = c_.natoms();
+  const int nk = static_cast<int>(kpts_.size());
   max_residual = 0.0;
   not_converged = 0;
   const double deg = (nspin_ == 1 && !noncol_) ? 2.0 : 1.0;
@@ -1102,7 +1125,151 @@ void Calculation::unpack(const std::vector<double>& x, RhoG& rho, DMat& D) const
 // =====================================================================================
 //  Self-consistency loop
 // =====================================================================================
+void Calculation::set_exchange_active(bool on) {
+  if (!hybrid_ || on == exx_active_) return;
+  std::swap(xc_, xc_other_);
+  exx_active_ = on;
+}
+
+// Hybrid functionals: outer loop over the exchange operator. Each outer iteration builds the compressed
+// operator P_k = V_x[psi_k] from the current orbitals and runs an ordinary SCF cycle with a fixed operator U.
+// In the inner cycle the exchange energy is linearized, E_x ~ Tr[gamma U] - 1/2 Tr[gamma_in U]; the difference to
+// the true functional for the resulting orbitals, dE = E_x[new] - Tr[gamma_new U] + 1/2 Tr[gamma_in U], measures
+// the convergence. The fixed-point iteration U = P_k converges slowly for metals and magnets; therefore U is an
+// Anderson combination of the operators of the last iterations, U = sum_i a_i P_i with sum a_i = 1. V_x is linear
+// in the density matrix, so this corresponds to mixing density matrices; the coefficients minimize the residual
+// of the packed densities (smooth density and PAW density matrices), which serve as a proxy.
 bool Calculation::scf() {
+  if (!hybrid_) return scf_cycle();
+  const bool verbose = p_.verbosity > 0;
+  if (!exx_ready_) {  // start orbitals from the semilocal parent functional
+    if (verbose) logf("\n  Hybrid functional: start with %s\n", xc_other_->name().c_str());
+    set_exchange_active(false);
+    exx_shift_ = 0.0;
+    const bool ok = scf_cycle();
+    set_exchange_active(true);
+    if (stopped_by_time_) return false;
+    if (!ok && verbose) logf("  WARNING: the semilocal start calculation did not converge\n");
+    exx_hist_.clear();
+    exx_coef_.clear();
+  }
+  const int keep = std::max(1, p_.exx_history);
+  // input_pure: the inner cycle ran with the operator of a single set of orbitals (no mixture); polish: the
+  // mixture has converged and one plain step follows. Convergence is accepted for plain steps only: a compressed
+  // operator is exact on the span of its own orbitals, so only then the orbitals are eigenstates of the true
+  // Hamiltonian to first order (needed for the forces).
+  bool converged = false, inner_ok = true, input_pure = true, polish = false;
+  // The mixture is used only close to convergence: far from it the map is strongly nonlinear and an extrapolation
+  // can lead into another (e.g. magnetic) solution; until then plain fixed-point steps are taken.
+  bool linear_regime = false;
+  const double mix_threshold = 1e-5 * std::max(1.0, nelec_);
+  for (int outer = 0;; ++outer) {
+    // Tr[gamma_new P_i] for the stored operators, then the operator of the current orbitals
+    int nold = static_cast<int>(exx_hist_.size());
+    std::vector<double> cross(nold);
+    for (int i = 0; i < nold; ++i) cross[i] = exchange_cross_energy(exx_hist_[i].ace);
+    const double e_new = exchange_pass(true, nullptr);
+    exx_energy_ = e_new;
+    ExxEntry entry;
+    entry.ace = std::move(ace_);
+    entry.x = pack(rho_, D_);
+    if (nold > 0) {
+      double e_lin = 0.0;
+      for (int i = 0; i < nold; ++i) e_lin += exx_coef_[i] * cross[i];
+      const double dexx = e_new - e_lin - exx_shift_;
+      // energies of the true functional for the current orbitals
+      en_.total += dexx;
+      en_.free += dexx;
+      en_.sigma0 += dexx;
+      en_.harris += dexx;
+      en_.exx = e_new;
+      if (verbose)
+        logf("\n  Exact exchange, outer iteration %d: E_x(plane waves) = %.10f Ha, change of the energy %.3e Ha, free energy %.10f Ha\n",
+             outer, e_new, dexx, en_.free);
+      converged = std::abs(dexx) < p_.exx_tol && inner_ok && input_pure;
+      polish = std::abs(dexx) < p_.exx_tol && inner_ok && !input_pure;
+      if (!linear_regime && std::abs(dexx) < mix_threshold) {
+        linear_regime = true;
+        exx_hist_.clear();  // residuals of the nonlinear phase are not used
+        nold = 0;
+      }
+      entry.has_residual = true;
+      entry.r.resize(entry.x.size());
+      for (size_t i = 0; i < entry.x.size(); ++i) entry.r[i] = entry.x[i] - exx_xin_[i];
+    } else if (verbose) {
+      logf("\n  Exact exchange: E_x(plane waves) = %.10f Ha for the start orbitals\n", e_new);
+    }
+    // append to the history; entries without residual (start orbitals) and the oldest ones are dropped
+    exx_hist_.push_back(std::move(entry));
+    RMatrix e2(nold + 1, nold + 1);
+    for (int i = 0; i < nold; ++i) {
+      for (int j = 0; j < nold; ++j) e2(i, j) = exx_e2_(i, j);
+      e2(i, nold) = e2(nold, i) = cross[i];
+    }
+    e2(nold, nold) = 2.0 * e_new;
+    while (static_cast<int>(exx_hist_.size()) > 1 && (!exx_hist_.front().has_residual || static_cast<int>(exx_hist_.size()) > keep)) {
+      exx_hist_.erase(exx_hist_.begin());
+      const int n = e2.rows() - 1;
+      RMatrix t(n, n);
+      for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) t(i, j) = e2(i + 1, j + 1);
+      e2 = t;
+    }
+    exx_e2_ = e2;
+    const int n = static_cast<int>(exx_hist_.size());
+    exx_coef_.assign(n, 0.0);
+    exx_coef_[n - 1] = 1.0;  // operator of the current orbitals
+    exx_ready_ = true;
+    if (converged || outer >= p_.exx_max_iter) {
+      exx_shift_ = -e_new;
+      break;
+    }
+    // Anderson coefficients: minimize |sum_i a_i r_i| with sum_i a_i = 1
+    input_pure = true;
+    if (n > 1 && exx_hist_.front().has_residual && !polish && linear_regime) {
+      RMatrix g(n, n);
+      double tr = 0.0;
+      for (int i = 0; i < n; ++i) {
+        for (int j = 0; j <= i; ++j) g(i, j) = g(j, i) = mixer_.dot(exx_hist_[i].r, exx_hist_[j].r);
+        tr += g(i, i);
+      }
+      for (int i = 0; i < n; ++i) g(i, i) += 1e-10 * tr / n;
+      std::vector<double> a(n, 1.0);
+      double sum = 0.0, amax = 0.0;
+      if (solve_real(g, a)) {
+        for (double v : a) sum += v;
+        for (double& v : a) {
+          v /= sum;
+          amax = std::max(amax, std::abs(v));
+        }
+        if (std::isfinite(amax) && amax < 10.0) {
+          exx_coef_ = a;
+          input_pure = false;
+        }
+      }
+    }
+    exx_xin_.assign(exx_hist_.back().x.size(), 0.0);
+    exx_shift_ = 0.0;
+    for (int i = 0; i < n; ++i) {
+      for (size_t k = 0; k < exx_xin_.size(); ++k) exx_xin_[k] += exx_coef_[i] * exx_hist_[i].x[k];
+      for (int j = 0; j < n; ++j) exx_shift_ -= 0.5 * exx_coef_[i] * exx_coef_[j] * exx_e2_(i, j);
+    }
+    setup_mixer();  // the Pulay history of the previous operator is of no use
+    inner_ok = scf_cycle();
+    if (stopped_by_time_) return false;
+  }
+  scf_converged_ = converged;
+  if (verbose) {
+    logf(converged ? "\n  Hybrid functional converged\n" : "\n  WARNING: hybrid functional NOT converged\n");
+    logf("    exact exchange (plane-wave part) %18.10f\n", en_.exx);
+    logf("    total energy E         %20.10f\n", en_.total);
+    logf("    free energy  E-TS      %20.10f   (%.8f eV)\n", en_.free, en_.free * hartree_in_ev);
+    logf("    E(sigma -> 0)          %20.10f\n", en_.sigma0);
+  }
+  return converged;
+}
+
+bool Calculation::scf_cycle() {
   ScopedTimer timer("scf");
   LSDA_CHECK(have_density_, "scf: no start density");
   const bool verbose = p_.verbosity > 0;
@@ -1140,8 +1307,10 @@ bool Calculation::scf() {
     DMat D_out;
     compute_density(rho_out, D_out);
     const Functional f_out = evaluate(rho_out, D_out, false);
-    const double e_harris = occ_.band_energy - double_counting(rho_, D_) + f_in.total();
-    const double e_ks = occ_.band_energy - double_counting(rho_out, D_out) + f_out.total();
+    // exx: linearized exact-exchange energy (the band energy contains sum f <psi|V_x|psi>)
+    const double exx = exx_active_ ? exx_shift_ : 0.0;
+    const double e_harris = occ_.band_energy - double_counting(rho_, D_) + f_in.total() + exx;
+    const double e_ks = occ_.band_energy - double_counting(rho_out, D_out) + f_out.total() + exx;
 
     en_.band = occ_.band_energy;
     en_.hartree = f_out.hartree;
@@ -1371,6 +1540,7 @@ void Calculation::write_cube(const std::string& path, bool magnetization) const 
 std::vector<std::vector<double>> Calculation::eigenvalues_at(const Vec3& kfrac, double tol, int max_iter) {
   LSDA_CHECK(have_occ_, "eigenvalues_at: run scf() first");
   LSDA_CHECK(!noncol_, "band structures are not implemented for non-collinear calculations");
+  LSDA_CHECK(!hybrid_, "band structures are not implemented for hybrid functionals (the exchange operator exists on the k-grid only)");
   const int nat = c_.natoms();
   const PWBasis b = make_pw_basis(c_, KPoint{kfrac, 0.0}, p_.ecut, fft_c_, p_.ecut_smooth);
   LSDA_CHECK(b.npw >= nbands_, "eigenvalues_at: fewer plane waves than bands");

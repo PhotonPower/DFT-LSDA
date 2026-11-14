@@ -53,6 +53,15 @@ struct Params {
   // PAW
   int paw_ntheta = 7;          // angular quadrature for the on-site xc correction (2 n^2 points)
   // run control
+  // hybrid functionals (xc = pbe0, hse06, hf)
+  double exx_fraction = -1.0;   // fraction of exact exchange (< 0: default of the functional)
+  double exx_screening = -1.0;  // screening parameter omega in 1/bohr (< 0: default of the functional)
+  double exx_tol = 1e-6;        // convergence of the exchange energy between outer iterations (Ha); the error of the
+                                // forces is of first order, of the energy of second order (input default for
+                                // tasks with forces: 1e-9)
+  int exx_max_iter = 30;        // outer iterations (updates of the exchange operator)
+  int exx_history = 4;          // Anderson mixing of the exchange operators over this many outer iterations (1: none)
+  std::string exx_singularity = "auto";  // Coulomb singularity: truncated, auxiliary or auto
   double max_seconds = 0.0;    // stop cleanly when the wall time of the run would exceed this (0: no limit)
   bool checkpoint_wfc = true;  // store the wavefunctions in the checkpoint (large, but restarts are immediate)
   // misc
@@ -66,6 +75,7 @@ struct Energies {
   double free = 0;    // E - TS (variational; consistent with the forces)
   double sigma0 = 0;  // extrapolation to zero smearing
   double harris = 0;  // Harris-Weinert-Foulkes estimate (equals `total` at self-consistency)
+  double exx = 0;     // plane-wave part of the exact-exchange energy (hybrid functionals; contained in `total`)
 };
 
 class Calculation {
@@ -153,6 +163,29 @@ class Calculation {
   Crystal c_;
   Params p_;
   std::unique_ptr<XCFunctional> xc_;
+  // ---- hybrid functionals (exchange.cpp) ----
+  std::unique_ptr<XCFunctional> xc_other_;  // the functional that is currently not active (semilocal start / hybrid)
+  bool hybrid_ = false, exx_active_ = false, exx_ready_ = false, exx_truncated_ = true;
+  double exx_fraction_ = 0.0, exx_omega_ = 0.0, exx_rc_ = 0.0, exx_v0_ = 0.0;
+  double exx_shift_ = 0.0;      // constant of the linearized exchange energy of the inner loop, -1/2 Tr[gamma_in V_in]
+  double exx_energy_ = 0.0;
+  std::vector<CMatrix> ace_;    // compressed exchange operator of the current orbitals, per k-point and spin
+  // history of the outer loop: operators of the output orbitals of earlier iterations with the packed densities
+  // (proxy for the Anderson mixing) and the residuals; the operator in use is sum_i exx_coef_[i] * operator i
+  struct ExxEntry {
+    std::vector<CMatrix> ace;
+    std::vector<double> x, r;
+    bool has_residual = false;
+  };
+  std::vector<ExxEntry> exx_hist_;
+  std::vector<double> exx_coef_, exx_xin_;
+  RMatrix exx_e2_;              // Tr[gamma_i V_j] between the stored iterations
+  void setup_exchange();
+  void set_exchange_active(bool on);
+  double exchange_kernel(double p2) const;
+  double exchange_pass(bool build, std::vector<double>* forces);
+  double exchange_cross_energy(const std::vector<CMatrix>& ace) const;
+  bool scf_cycle();
   Smearing smearing_;
   std::vector<SymOp> ops_;
   std::vector<std::vector<RMatrix>> rot_;  // [op][species] rotation of projector indices

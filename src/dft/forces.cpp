@@ -109,6 +109,12 @@ std::vector<Vec3> Calculation::forces() {
     }
   }
   par::sum(fnl.data(), fnl.size());
+  if (hybrid_) {  // plane-wave part of the exact exchange (the on-site part is contained in dH)
+    LSDA_CHECK(exx_ready_ && exx_active_, "forces: run scf() first");
+    std::vector<double> fx;
+    exchange_pass(false, &fx);
+    for (size_t i = 0; i < fx.size(); ++i) fnl[i] += fx[i];
+  }
 
   // ---- total, symmetrized --------------------------------------------------------------------
   std::vector<Vec3> F(nat), Fs(nat, Vec3{0, 0, 0});
@@ -150,6 +156,7 @@ Mat3 Calculation::stress() {
   ScopedTimer timer("stress");
   LSDA_CHECK(have_occ_, "stress: run scf() first");
   LSDA_CHECK(!noncol_, "the stress tensor is not implemented for non-collinear calculations");
+  LSDA_CHECK(!hybrid_, "the stress tensor is not implemented for hybrid functionals");
   const int nat = c_.natoms(), ng = gs_.ng, nL = (lmax_comp_ + 1) * (lmax_comp_ + 1);
   const int ca[6] = {0, 1, 2, 1, 0, 0}, cb[6] = {0, 1, 2, 2, 2, 1};  // xx yy zz yz xz xy
   double sig[6] = {0, 0, 0, 0, 0, 0};                                 // dF/d eps (energy units)

@@ -24,6 +24,8 @@ struct SphereQuadrature {
   std::vector<double> weights;
 };
 SphereQuadrature make_sphere_quadrature(int ntheta);
+// Gauss-Legendre nodes and weights on [-1, 1]
+void gauss_legendre(int n, std::vector<double>& x, std::vector<double>& w);
 void gauss_legendre(int n, std::vector<double>& x, std::vector<double>& w);  // on [-1,1]
 
 // Real Gaunt coefficients G(L, L1, L2) = int Y_L Y_L1 Y_L2 dOmega,

@@ -719,6 +719,189 @@ static void test_eigensolvers(const std::string& dir) {
   }
 }
 
+
+// ---- hybrid functionals: short-range PBE exchange, on-site exact exchange, dataset conventions -------------
+static void test_exchange(const std::string& dir) {
+  std::printf("Hybrid functionals\n");
+  // HJS enhancement factor: omega = 0 reproduces PBE, s = 0 the exact short-range LDA exchange
+  double dev_pbe = 0.0, dev_lda = 0.0;
+  for (double sv = 0.0; sv <= 3.0001; sv += 0.25) {
+    const double f_pbe = 1.0 + 0.804 - 0.804 / (1.0 + 0.2195149727645171 * sv * sv / 0.804);
+    dev_pbe = std::max(dev_pbe, std::abs(sr_pbe_enhancement(sv, 0.0) - f_pbe));
+  }
+  for (double nu : {0.05, 0.2, 0.5, 1.0, 2.0, 5.0}) {
+    // F(a) = 1 - 8/3 a [sqrt(pi) erf(1/(2a)) + (2a - 4a^3) exp(-1/(4a^2)) - 3a + 4a^3],  a = omega/(2 k_F)
+    const double a = 0.5 * nu, ex = std::exp(-1.0 / (4 * a * a));
+    const double exact = 1.0 - 8.0 / 3.0 * a * (std::sqrt(pi) * std::erf(1.0 / (2 * a)) + (2 * a - 4 * a * a * a) * ex - 3 * a + 4 * a * a * a);
+    dev_lda = std::max(dev_lda, std::abs(sr_pbe_enhancement(0.0, nu) - exact));
+  }
+  check(dev_pbe < 3e-3, "HJS factor at omega = 0 equals the PBE factor (s <= 3)", dev_pbe);
+  // the model exchange hole reproduces the exact short-range LDA exchange to a few 1e-3 only (by construction)
+  check(dev_lda < 5e-3, "HJS factor at s = 0 close to short-range LDA exchange", dev_lda);
+  {
+    double fs, fn;
+    const double s0 = 1.3, n0 = 0.4, h = 1e-5;
+    sr_pbe_enhancement(s0, n0, &fs, &fn);
+    const double ds = (sr_pbe_enhancement(s0 + h, n0) - sr_pbe_enhancement(s0 - h, n0)) / (2 * h);
+    const double dn = (sr_pbe_enhancement(s0, n0 + h) - sr_pbe_enhancement(s0, n0 - h)) / (2 * h);
+    check(std::abs(fs - ds) + std::abs(fn - dn) < 1e-8, "HJS factor: derivatives", std::abs(fs - ds) + std::abs(fn - dn));
+  }
+
+  // on-site exact exchange: dH = dE/dD for Hartree-Fock and for the screened hybrid
+  for (int kind = 0; kind < 2; ++kind) {
+    const std::unique_ptr<XCFunctional> xc = make_xc(kind == 0 ? "hf" : "hse06");
+    PawSetup s = PawSetup::load(dir + "/Fe.GGA_PBE-JTH.xml");
+    s.prepare_exchange(xc->exx_screening());
+    const int ni = s.ni;
+    RMatrix D[2], dD[2], dH[2];
+    const RMatrix d0 = s.atomic_density_matrix();
+    unsigned seed = 12345;
+    auto rnd = [&]() {
+      seed = seed * 1664525u + 1013904223u;
+      return static_cast<double>(seed >> 8) / 16777216.0 - 0.5;
+    };
+    for (int sp = 0; sp < 2; ++sp) {
+      D[sp] = d0;
+      dD[sp].resize(ni, ni);
+      for (int i = 0; i < ni; ++i)
+        for (int j = 0; j <= i; ++j) {
+          D[sp](i, j) = D[sp](j, i) = (sp == 0 ? 0.6 : 0.4) * d0(i, j) + 0.01 * rnd();
+          dD[sp](i, j) = dD[sp](j, i) = 0.02 * rnd();
+        }
+    }
+    s.onsite(2, D, dH, *xc);
+    double lin = 0.0;
+    for (int sp = 0; sp < 2; ++sp)
+      for (int i = 0; i < ni; ++i)
+        for (int j = 0; j < ni; ++j) lin += dH[sp](i, j) * dD[sp](i, j);
+    const double h = 1e-3;
+    RMatrix Dp[2] = {D[0], D[1]}, Dm[2] = {D[0], D[1]};
+    for (int sp = 0; sp < 2; ++sp)
+      for (size_t i = 0; i < D[sp].size(); ++i) {
+        Dp[sp].data()[i] += h * dD[sp].data()[i];
+        Dm[sp].data()[i] -= h * dD[sp].data()[i];
+      }
+    const double fd = (s.onsite(2, Dp, nullptr, *xc) - s.onsite(2, Dm, nullptr, *xc)) / (2 * h);
+    check(std::abs(fd - lin) < 2e-6 * std::max(1.0, std::abs(lin)), kind == 0 ? "Fe on-site exchange (HF): dH = dE/dD" : "Fe on-site (HSE06): dH = dE/dD",
+          std::abs(fd - lin));
+    // spin-paired limit: nspin = 1 with D equals nspin = 2 with D/2 in both channels
+    RMatrix half[2] = {D[0], D[0]};
+    for (int sp = 0; sp < 2; ++sp)
+      for (size_t i = 0; i < half[sp].size(); ++i) half[sp].data()[i] *= 0.5;
+    const double e1 = s.onsite(1, D, nullptr, *xc), e2 = s.onsite(2, half, nullptr, *xc);
+    check(std::abs(e1 - e2) < 1e-9 * std::abs(e1), kind == 0 ? "Fe on-site exchange (HF): spin-paired limit" : "Fe on-site (HSE06): spin-paired limit", std::abs(e1 - e2));
+    if (kind == 1) {
+      // screening removes long-range exchange only: the tensor changes little, and not at all for omega -> 0
+      double diff = 0.0, scale = 0.0;
+      for (size_t i = 0; i < s.C.size(); ++i) {
+        diff = std::max(diff, std::abs(s.C.data()[i] - s.Cx.data()[i]));
+        scale = std::max(scale, std::abs(s.C.data()[i]));
+      }
+      check(diff > 0.0 && diff < 0.02 * scale, "Fe: screened on-site Coulomb tensor close to the bare one", diff / scale);
+      s.prepare_exchange(1e-3);
+      diff = 0.0;
+      for (size_t i = 0; i < s.C.size(); ++i) diff = std::max(diff, std::abs(s.C.data()[i] - s.Cx.data()[i]));
+      check(diff < 1e-8, "Fe: screened tensor -> bare tensor for omega -> 0", diff);
+    }
+  }
+
+  // Convention of the valence-core exchange matrix of the datasets, X_ij = sum_c (i c|c j) over the core orbitals
+  // of one spin direction: the core orbitals are recomputed here (non-relativistic radial Schroedinger equation in
+  // the reconstructed LDA potential of the reference atom) and the matrix elements of the bound valence states
+  // are compared with the dataset.
+  for (const char* el : {"Al", "Fe"}) {
+    const PawSetup s = PawSetup::load(dir + "/" + el + ".LDA_PW-JTH.xml");
+    const RadialGrid& g = s.grid;
+    const int nfull = g.size();
+    std::vector<double> dens(nfull);  // spherical density times sqrt(4 pi) (convention of the stored densities)
+    for (int i = 0; i < nfull; ++i) {
+      dens[i] = s.nc[i];
+      for (int j = 0; j < s.nj; ++j) dens[i] += s.f_j[j] * s.phi[j][i] * s.phi[j][i] / std::sqrt(4 * pi);
+    }
+    const std::vector<double> vh = g.hartree(0, dens, nfull);
+    std::vector<double> half(nfull), exc(nfull), vxc(nfull), vdn(nfull);
+    for (int i = 0; i < nfull; ++i) half[i] = 0.5 * dens[i] / std::sqrt(4 * pi);
+    LSDA_PW92().evaluate(nfull, half.data(), half.data(), exc.data(), vxc.data(), vdn.data());
+    // every second grid point with 0 < r < 25
+    std::vector<int> idx;
+    for (int i = 1; i < nfull && g.r[i] < 25.0; i += 2) idx.push_back(i);
+    const int m = static_cast<int>(idx.size());
+    std::vector<double> x(m), v(m), hm(m), hp(m);
+    for (int i = 0; i < m; ++i) {
+      x[i] = g.r[idx[i]];
+      v[i] = -s.Z / x[i] + vh[idx[i]] / std::sqrt(4 * pi) + vxc[idx[i]];
+    }
+    for (int i = 0; i < m; ++i) {
+      hm[i] = i == 0 ? x[0] : x[i] - x[i - 1];
+      hp[i] = i == m - 1 ? hm[i] : x[i + 1] - x[i];
+    }
+    const int ncore = static_cast<int>(std::lround(s.n_core));
+    std::vector<std::pair<int, int>> shells;  // (l, number of core states)
+    if (ncore == 2) shells = {{0, 1}};
+    if (ncore == 10) shells = {{0, 2}, {1, 1}};
+    if (ncore == 18) shells = {{0, 3}, {1, 2}};
+    if (shells.empty()) continue;
+    std::vector<std::pair<int, std::vector<double>>> core;  // (l, u(r) = r R(r))
+    for (const auto& [l, count] : shells) {
+      RMatrix H(m, m);
+      for (int i = 0; i < m; ++i) {
+        H(i, i) = 1.0 / (hm[i] * hp[i]) + 0.5 * l * (l + 1) / (x[i] * x[i]) + v[i];
+        if (i + 1 < m) H(i, i + 1) = H(i + 1, i) = -1.0 / (hp[i] * std::sqrt((hm[i] + hp[i]) * (hm[i + 1] + hp[i + 1])));
+      }
+      std::vector<double> e;
+      eigh_real(H, e);
+      for (int k = 0; k < count; ++k) {
+        std::vector<double> u(m);
+        double nrm = 0.0;
+        for (int i = 0; i < m; ++i) u[i] = H(i, k) / std::sqrt(hm[i] + hp[i]);
+        for (int i = 0; i < m; ++i) nrm += 0.5 * (hm[i] + hp[i]) * u[i] * u[i];
+        for (double& ui : u) ui /= std::sqrt(nrm);
+        core.push_back({l, u});
+      }
+    }
+    auto cumulative = [&](const std::vector<double>& y) {
+      std::vector<double> out(m, 0.0);
+      out[0] = 0.5 * x[0] * y[0];
+      for (int i = 1; i < m; ++i) out[i] = out[i - 1] + 0.5 * (y[i] + y[i - 1]) * (x[i] - x[i - 1]);
+      return out;
+    };
+    auto slater = [&](int k, const std::vector<double>& f1, const std::vector<double>& f2) {  // int int f1(r) r<^k/r>^(k+1) f2(r')
+      std::vector<double> a(m), b(m);
+      for (int i = 0; i < m; ++i) {
+        a[i] = f2[i] * std::pow(x[i], k);
+        b[i] = f2[i] / std::pow(x[i], k + 1);
+      }
+      const std::vector<double> ca = cumulative(a), cb = cumulative(b);
+      std::vector<double> y(m);
+      for (int i = 0; i < m; ++i) y[i] = f1[i] * (ca[i] / std::pow(x[i], k + 1) + std::pow(x[i], k) * (cb[m - 1] - cb[i]));
+      return cumulative(y)[m - 1];
+    };
+    auto w3j0sq = [](int a, int b, int c) {  // squared Wigner 3j symbol (a b c; 0 0 0)
+      const int J = a + b + c;
+      if (J % 2 != 0 || c < std::abs(a - b) || c > a + b) return 0.0;
+      auto f = [](int n) { return std::tgamma(n + 1.0); };
+      const int h = J / 2;
+      const double t = f(h) / (f(h - a) * f(h - b) * f(h - c));
+      return f(J - 2 * a) * f(J - 2 * b) * f(J - 2 * c) / f(J + 1) * t * t;
+    };
+    double worst = 0.0;
+    for (int j = 0; j < s.nj; ++j) {
+      if (!s.is_bound(j) || s.f_j[j] <= 0.0) continue;
+      const int l = s.l_j[j];
+      double own = 0.0;
+      for (const auto& [lc, uc] : core) {
+        std::vector<double> prod(m);
+        for (int i = 0; i < m; ++i) prod[i] = x[i] * s.phi[j][idx[i]] * uc[i];
+        for (int k = std::abs(l - lc); k <= l + lc; ++k) own += (2 * lc + 1) * w3j0sq(l, k, lc) * slater(k, prod, prod);
+      }
+      int i_first = 0;
+      while (s.j_i[i_first] != j) ++i_first;
+      worst = std::max(worst, std::abs(s.X(i_first, i_first) / own - 1.0));
+    }
+    check(worst < 0.03, std::string(el) + ": valence-core exchange matrix = sum over core orbitals", worst);
+  }
+}
+
 int main(int argc, char** argv) {
   const std::string dir = argc > 1 ? argv[1] : "pseudos";
   try {
@@ -734,6 +917,7 @@ int main(int argc, char** argv) {
     test_spinor_hamiltonian(dir);
     test_paw(dir, false);
     test_paw(dir, true);
+    test_exchange(dir);
   } catch (const std::exception& e) {
     std::printf("exception: %s\n", e.what());
     return 2;

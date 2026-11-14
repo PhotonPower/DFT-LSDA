@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 #include "paw/setup.hpp"
 
 #include <cmath>
@@ -85,6 +87,11 @@ PawSetup PawSetup::load(const std::string& path, int ntheta) {
   LSDA_CHECK(kin, "PAW-XML: missing <kinetic_energy_differences>");
   const std::vector<double> dk = kin->values();
   LSDA_CHECK(static_cast<int>(dk.size()) == s.nj * s.nj, "PAW-XML: wrong size of kinetic energy matrix");
+  // exact-exchange data (optional): valence-core matrix per radial pair and core-core energy
+  std::vector<double> xvc;
+  if (const XmlNode* x = root->child("exact_exchange_X_matrix")) xvc = x->values();
+  if (const XmlNode* x = root->child("exact_exchange")) s.exx_core = x->num("core-core");
+  s.has_exx_data = static_cast<int>(xvc.size()) == s.nj * s.nj;
 
   // integration range: a few points beyond r_paw, even number of intervals
   s.ncut = s.grid.index_of(s.r_paw) + 3;
@@ -161,6 +168,20 @@ PawSetup PawSetup::load(const std::string& path, int ntheta) {
   for (int i = 0; i < s.ni; ++i)
     for (int j = 0; j < s.ni; ++j)
       if (s.L_i[i] == s.L_i[j]) s.B(i, j) = dk[s.j_i[i] * s.nj + s.j_i[j]];
+  s.X.resize(s.ni, s.ni);
+  if (s.has_exx_data)
+    for (int i = 0; i < s.ni; ++i)
+      for (int j = 0; j < s.ni; ++j)
+        if (s.L_i[i] == s.L_i[j]) s.X(i, j) = 0.5 * (xvc[s.j_i[i] * s.nj + s.j_i[j]] + xvc[s.j_i[j] * s.nj + s.j_i[i]]);
+  {
+    // Sign convention: X is kept as the positive matrix X_ij = sum_c (i c|c j) over the core orbitals of one spin
+    // direction (PAW-XML specification), E_vc = -sum_s sum_ij D^s_ij X_ij. The JTH/atompaw datasets store the
+    // matrix with the sign of the energy contribution (negative diagonal).
+    double tr = 0.0;
+    for (int i = 0; i < s.ni; ++i) tr += s.X(i, i);
+    if (tr < 0.0)
+      for (size_t i = 0; i < s.X.size(); ++i) s.X.data()[i] = -s.X.data()[i];
+  }
 
   s.quad_ = make_sphere_quadrature(ntheta);
   s.ylm_quad_.resize(s.nL, static_cast<int>(s.quad_.points.size()));
@@ -315,7 +336,14 @@ void PawSetup::compute_onsite_tensors() {
         gaunt_ij_[static_cast<size_t>(i) * ni + j].push_back({L, q, g});
       }
     }
-  C.resize(ni * ni, ni * ni);
+  radial_coulomb_ = R;
+  delta_lq_ = dl;
+  C = assemble_coulomb(R);
+}
+
+// C_ij,kl = sum_L G_L,ij G_L,kl R_l(q_ij, q_kl) from the radial integrals
+RMatrix PawSetup::assemble_coulomb(const std::vector<RMatrix>& R) const {
+  RMatrix c(ni * ni, ni * ni);
   for (int ij = 0; ij < ni * ni; ++ij)
     for (int kl = 0; kl < ni * ni; ++kl) {
       double sum = 0.0;
@@ -325,8 +353,93 @@ void PawSetup::compute_onsite_tensors() {
             const int l = static_cast<int>(std::floor(std::sqrt(static_cast<double>(a.L)) + 1e-9));
             sum += a.g * b.g * R[l](a.q, b.q);
           }
-      C(ij, kl) = sum;
+      c(ij, kl) = sum;
     }
+  return c;
+}
+
+// Coulomb tensor of the on-site exchange. For the screened kernel erfc(omega r)/r the long-range part
+// erf(omega r)/r is subtracted; its multipole components
+//   K_l(r, r') = (2l+1)/2 int_-1^1 P_l(x) erf(omega d)/d dx,  d^2 = r^2 + r'^2 - 2 r r' x
+// are integrated numerically (the kernel is smooth), the pseudo pair densities include their compensation charges.
+void PawSetup::prepare_exchange(double omega) {
+  if (exx_omega == omega) return;
+  exx_omega = omega;
+  if (omega <= 0.0) {
+    Cx = C;
+    return;
+  }
+  const int nl = 2 * lmax + 1, nx = 24;
+  std::vector<double> x, w;
+  gauss_legendre(nx, x, w);
+  std::vector<double> pl(static_cast<size_t>(nl) * nx);  // (2l+1)/2 w P_l(x)
+  for (int k = 0; k < nx; ++k) {
+    double p0 = 1.0, p1 = x[k];
+    for (int l = 0; l < nl; ++l) {
+      const double p = l == 0 ? p0 : (l == 1 ? p1 : ((2 * l - 1) * x[k] * p1 - (l - 1) * p0) / l);
+      if (l >= 2) {
+        p0 = p1;
+        p1 = p;
+      }
+      pl[static_cast<size_t>(l) * nx + k] = 0.5 * (2 * l + 1) * w[k] * p;
+    }
+  }
+  const size_t n = ncut;
+  std::vector<std::vector<double>> K(nl, std::vector<double>(n * n));
+#pragma omp parallel for schedule(dynamic, 8)
+  for (int i = 0; i < ncut; ++i)
+    for (int j = 0; j <= i; ++j) {
+      const double ri = grid.r[i], rj = grid.r[j];
+      double acc[16] = {0};
+      for (int k = 0; k < nx; ++k) {
+        const double d = std::sqrt(std::max(ri * ri + rj * rj - 2.0 * ri * rj * x[k], 0.0)), t = omega * d;
+        const double kern = t < 1e-4 ? omega * (2.0 / std::sqrt(pi)) * (1.0 - t * t / 3.0) : std::erf(t) / d;
+        for (int l = 0; l < nl; ++l) acc[l] += pl[static_cast<size_t>(l) * nx + k] * kern;
+      }
+      for (int l = 0; l < nl; ++l) K[l][i * n + j] = K[l][j * n + i] = acc[l];
+    }
+  auto allowed = [&](int q, int l) {
+    int j1 = 0, j2 = 0;
+    for (int a = 0; a < nj; ++a)
+      for (int b = a; b < nj; ++b)
+        if (pair(a, b) == q) j1 = a, j2 = b;
+    return l >= std::abs(l_j[j1] - l_j[j2]) && l <= l_j[j1] + l_j[j2] && (l + l_j[j1] + l_j[j2]) % 2 == 0;
+  };
+  std::vector<RMatrix> R = radial_coulomb_;
+  for (int l = 0; l < nl; ++l) {
+    // weighted densities and their long-range potentials v(r) = 4 pi/(2l+1) int K_l(r, r') f(r') r'^2 dr'
+    std::vector<int> qs;
+    for (int q = 0; q < nq_; ++q)
+      if (allowed(q, l)) qs.push_back(q);
+    const int m = static_cast<int>(qs.size());
+    std::vector<std::vector<double>> f(2 * m, std::vector<double>(n)), v(2 * m, std::vector<double>(n));
+    for (int a = 0; a < m; ++a)
+      for (size_t i = 0; i < n; ++i) {
+        f[a][i] = wr2_[i] * nq_ae_[qs[a]][i];
+        f[m + a][i] = wr2_[i] * (nq_ps_[qs[a]][i] + delta_lq_[l][qs[a]] * shape_[l][i]);
+      }
+    const double pref = 4 * pi / (2 * l + 1);
+#pragma omp parallel for schedule(static)
+    for (int a = 0; a < 2 * m; ++a)
+      for (size_t i = 0; i < n; ++i) {
+        const double* k = &K[l][i * n];
+        double sum = 0.0;
+        for (size_t j = 0; j < n; ++j) sum += k[j] * f[a][j];
+        v[a][i] = pref * sum;
+      }
+    for (int a = 0; a < m; ++a)
+      for (int b = 0; b < m; ++b) {
+        double ae = 0.0, ps = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+          ae += f[a][i] * v[b][i];
+          ps += f[m + a][i] * v[m + b][i];
+        }
+        R[l](qs[a], qs[b]) -= 0.5 * (ae - ps);
+      }
+    for (int q = 0; q < nq_; ++q)
+      for (int p = 0; p < q; ++p) R[l](q, p) = R[l](p, q) = 0.5 * (R[l](q, p) + R[l](p, q));
+  }
+  Cx = assemble_coulomb(R);
 }
 
 void PawSetup::multipoles(const RMatrix& Dtot, double* Q) const {
@@ -376,6 +489,38 @@ double PawSetup::onsite(int nspin, const RMatrix* D, RMatrix* dH, const XCFuncti
       dH[s].resize(ni, ni);
       for (int ij = 0; ij < n2; ++ij) dH[s].data()[ij] = (nspin == 4 && s > 0) ? 0.0 : B.data()[ij] + 2.0 * cd[ij];
     }
+
+  // ---- exact exchange (hybrid functionals): valence-valence, valence-core and core-core ------------
+  if (const double ax = xc.exx_fraction(); ax != 0.0) {
+    LSDA_CHECK(nspin != 4, "hybrid functionals are not implemented for non-collinear magnetism");
+    LSDA_CHECK(has_exx_data, "PAW dataset of " + symbol + " contains no exact-exchange data");
+    LSDA_CHECK(exx_omega == xc.exx_screening(), "onsite: prepare_exchange was not called for this functional");
+    // per spin channel: D^s (nspin = 1: both channels hold D/2)
+    const double per_spin = nspin == 2 ? 1.0 : 0.5, channels = nspin == 2 ? 1.0 : 2.0;
+    energy += ax * exx_core;
+    std::vector<double> kx(n2);
+    for (int s = 0; s < nspin; ++s) {
+      const double* d = D[s].data();
+      // kx_ik = sum_jl Cx_(ij),(kl) D_jl
+      std::fill(kx.begin(), kx.end(), 0.0);
+      for (int k = 0; k < ni; ++k)
+        for (int l = 0; l < ni; ++l) {
+          const double* c = Cx.col(k * ni + l);
+          for (int j = 0; j < ni; ++j) {
+            const double djl = per_spin * d[j * ni + l];
+            if (djl == 0.0) continue;
+            for (int i = 0; i < ni; ++i) kx[i * ni + k] += c[i * ni + j] * djl;
+          }
+        }
+      double e = 0.0;
+      for (int ij = 0; ij < n2; ++ij) e += per_spin * d[ij] * (kx[ij] + X.data()[ij]);
+      energy -= ax * channels * e;
+      if (dH)
+        for (int i = 0; i < ni; ++i)
+          for (int k = 0; k < ni; ++k)
+            dH[s](i, k) -= ax * (kx[i * ni + k] + kx[k * ni + i] + X(i, k));
+    }
+  }
 
   // ---- Hubbard correction ------------------------------------------------------------
   if (hubbard_l >= 0 && hubbard_u != 0.0 && nspin == 4) {

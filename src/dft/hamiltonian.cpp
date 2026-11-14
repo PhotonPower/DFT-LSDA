@@ -134,6 +134,15 @@ void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
     }
   }
   add_time("  H: local part (FFT)", wall_time() - t0);
+  if (!xi_.empty()) {
+    const double t1 = wall_time();
+    for (const auto& [xi, coef] : xi_) {
+      if (xi->cols() == 0 || coef == 0.0) continue;
+      const CMatrix c = overlap(xi->data(), xi->cols(), x, nb, dim);
+      gemm('N', 'N', dim, nb, xi->cols(), -coef, xi->data(), dim, c.data(), xi->cols(), 1.0, kx, dim);
+    }
+    add_time("  H: exact exchange (ACE)", wall_time() - t1);
+  }
 }
 
 CMatrix Hamiltonian::project(const cplx* x, int nb) const {

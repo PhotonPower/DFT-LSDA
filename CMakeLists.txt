@@ -48,6 +48,7 @@ add_library(lsdacore STATIC
   src/dft/mixer.cpp
   src/dft/calculation.cpp
   src/dft/forces.cpp
+  src/dft/exchange.cpp
   src/dft/relax.cpp
   src/dft/neb.cpp
   src/dft/phonons.cpp
