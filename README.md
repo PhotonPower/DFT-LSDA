@@ -73,7 +73,7 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome), `neb` (Wanderungspfad) |
 | `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
 | `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
 | `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
@@ -102,7 +102,9 @@ end
 | `eig_max_iter`, `eig_max_iter_first` | 2, 6 | Eigenlöser-Schritte pro SCF-Schritt bzw. im ersten SCF-Schritt |
 | `eig_tol`, `eig_tol_factor`, `eig_tol_max` | 1e-7, 0.1, 1e-3 | Residuumstoleranz = Faktor·√(Dichteresiduum²/N_el), begrenzt auf [`eig_tol`, `eig_tol_max`] |
 | `paw_ntheta` | 7 | Winkelquadratur der On-site-XC-Korrektur (2n² Punkte) |
-| `relax_steps`, `force_tol`, `max_step` | 50, 5e-4 Ha/bohr, 0.3 bohr | Relaxation |
+| `relax_steps`, `force_tol`, `max_step` | 50, 5e-4 Ha/bohr, 0.3 bohr | Relaxation (`force_tol`, `max_step` gelten auch für NEB) |
+| `dos`, `dos_width`, `dos_points` | `false`, Verschmierungsbreite, 2001 | Zustandsdichte nach dem letzten SCF in `<prefix>.dos`: gesamt und projiziert auf die PAW-Kugeln (Atom, l, Spin); Gauß-Breite in Ha |
+| `neb_images`, `neb_spring`, `neb_climb`, `neb_steps` | 5, 0.1 Ha/bohr², `true`, 200 | NEB: Zwischenbilder, Federkonstante, Climbing Image, maximale Schritte |
 
 ## Defektbildungsenergien in B2-Verbindungen
 
@@ -115,11 +117,13 @@ daher nur zusammen mit den chemischen Potentialen definiert. Der Workflow:
 2. Superzellen mit `tools/b2_supercell.py` erzeugen: perfekt, `vac_tm`, `vac_al`, `al_tm`, `tm_al`
    (der Defekt sitzt auf einem Platz voller kubischer Symmetrie → 48 Symmetrieoperationen bleiben
    erhalten), Atompositionen relaxieren (`task = relax`).
-3. `tools/defect_thermo.py`: großkanonisches Modell nicht wechselwirkender Defekte
+3. `tools/defect_thermo.py` (Optionen `--p` für Drücke in GPa, `--bulk-modulus`): großkanonisches Modell nicht wechselwirkender Defekte
    (Mayer, Elsässer, Fähnle, phys. stat. sol. (b) 191, 283 (1995)) → chemische Potentiale,
    Defektkonzentrationen und effektive Bildungsenergien als Funktion von Zusammensetzung und
    Temperatur, außerdem die zusammensetzungserhaltenden Reaktionen (Tripeldefekt, Schottky-Paar,
-   Antistrukturpaar) und die konstitutionellen Defekte.
+   Antistrukturpaar) und die konstitutionellen Defekte. Mit Volumeninformation – auf Druck null
+   relaxierte Zellen (`DEFECT_TASK=cellrelax`) oder Zellen festen Volumens mit Spannung (`stress = true`)
+   plus `--bulk-modulus` – außerdem Bildungsvolumina und Konzentrationen bei endlichem Druck.
 
 `examples/defects/run_defects.sh` führt die Schritte 2–3 automatisch aus (Standard: Defektzellen bei
 festem Volumen; `DEFECT_TASK=cellrelax` relaxiert zusätzlich die Zelle auf Druck null):
@@ -129,6 +133,36 @@ cd examples/defects
 ./run_defects.sh Ni 2.834 3 "4 4 4"          # NiAl, 54-Atom-Superzelle
 ./run_defects.sh Fe 2.813 3 "4 4 4" 2 1.0    # FeAl, spinpolarisiert (Startmoment 1 µB)
 ```
+
+## Wanderungsbarrieren (NEB)
+
+`task = neb` sucht den Pfad minimaler Energie zwischen zwei relaxierten Endzuständen (Nudged Elastic Band
+mit verbesserten Tangenten und Climbing Image, FIRE-Optimierer). Der zweite Endzustand steht im Block
+`atoms_final` (gleiche Atome in gleicher Reihenfolge; Koordinaten werden nicht in die Zelle zurückgefaltet,
+der Pfad folgt also genau den angegebenen Werten):
+
+```
+task       = neb
+neb_images = 5
+begin atoms          # Anfangszustand, z. B. Leerstelle auf Platz 1
+  ...
+end
+begin atoms_final    # Endzustand, z. B. Nachbaratom ist in die Leerstelle gesprungen
+  ...
+end
+```
+
+Ausgabe: Energien entlang des Pfads, Barriere vorwärts/rückwärts, alle Bilder in `<prefix>.neb.json`.
+Es werden nur Symmetrieoperationen benutzt, die beide Endzustände gemeinsam haben. Mit `restart = true`
+und `max_seconds` lässt sich auch ein NEB-Lauf in Zeitscheiben rechnen. Sitzt ein Bild per Symmetrie
+auf einem Energiemaximum (z. B. das mittlere Bild eines symmetrischen, geraden Pfads), eine gerade Zahl
+von Bildern wählen.
+
+## Zustandsdichte
+
+`dos = true` schreibt `<prefix>.dos`: Energie relativ zur Fermi-Energie (eV), Gesamtzustandsdichte und die
+Anteile in den PAW-Kugeln je Atom, Drehimpuls und Spin (Zustände/eV). Die obersten, unbesetzten Bänder
+werden vom Eigenlöser nicht auskonvergiert; für die Zustandsdichte oberhalb von E_F `nbands` erhöhen.
 
 ## LDA oder PBE
 
@@ -189,7 +223,8 @@ src/math      Kugelflächenfunktionen, Gaunt-Koeffizienten, Bessel-Transformatio
 src/xc        XC-Funktionale (Schnittstelle XCFunctional, LSDA-PW92)
 src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
-src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Relaxation
+src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
+              Relaxation, NEB
 src/io        Eingabe, JSON-Ausgabe
 tools         Superzellen, Zustandsgleichung, Defekt-Thermodynamik
 tests         Unit- und Regressionstests
@@ -212,8 +247,7 @@ tests         Unit- und Regressionstests
   Basis und enthält nicht die Pulay-Spannung.
 * Nach einem Neustart einer Relaxation beginnt die BFGS-Hesse-Matrix neu (Positionen, Dichte und Wellenfunktionen bleiben erhalten).
 * Parallelisierung nur über Threads (OpenMP + Thread-BLAS).
-* Die Defekt-Thermodynamik berücksichtigt nur Konfigurationsentropie (keine Bildungsvolumina,
-  keine Schwingungsentropie).
+* Die Defekt-Thermodynamik berücksichtigt nur Konfigurationsentropie (keine Schwingungsentropie).
 
 ## Lizenz und Datensätze
 

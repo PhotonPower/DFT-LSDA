@@ -4,19 +4,25 @@
 #pragma once
 #include "crystal/crystal.hpp"
 #include "dft/calculation.hpp"
+#include "dft/neb.hpp"
 #include "dft/relax.hpp"
 
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | stress | relax | cellrelax
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax | neb
   bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
+  bool dos = false;          // write <prefix>.dos after the final SCF
+  double dos_width = 0.0;    // Gaussian width (Ha); 0: the smearing width
+  int dos_points = 2001;
   bool restart = false;      // continue from <prefix>.chk (positions, density, density matrices)
   Crystal crystal;
   Params params;
   RelaxParams relax;
   CellRelaxParams cell;
+  NebParams neb;
+  std::vector<Vec3> frac_final;  // second end point of a NEB path (block atoms_final)
 };
 
 Input read_input(const std::string& path);

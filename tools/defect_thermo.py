@@ -24,7 +24,16 @@ Usage:
   defect_thermo.py --perfect perfect.json --vac-a vac_tm.json --vac-b vac_al.json \
                    --b-on-a al_tm.json --a-on-b tm_al.json [--T 1000 1200 1400] [--x 0.48 0.50 0.52]
 All supercells must have the same size and computational parameters (cutoffs, k-points, smearing).
-Formation volumes and vibrational entropies are neglected (p = 0, configurational entropy only).
+
+Pressure and formation volumes.  At pressure p the energies are replaced by enthalpies,
+eps_d -> eps_d + p v_d and eps0 -> eps0 + p Omega0, with the raw volume changes
+v_d = V(defect cell) - V(perfect cell) and Omega0 = V(perfect cell)/N.  Effective formation volumes are
+V_eff = -kT d ln c_d / dp.  The volumes are taken from
+  * supercells relaxed to zero pressure (task = cellrelax): v_d directly from the cell volumes, or
+  * supercells at the fixed volume of the perfect cell with stresses (stress = true) and --bulk-modulus B:
+    v_d = V (p_d - p_0)/B from the residual pressure, and the energies are corrected to zero pressure by
+    the elastic relaxation energy -V (p_d - p_0)^2 / (2 B)   (first-order elastic estimate).
+Vibrational entropies are neglected (configurational entropy only).
 """
 import argparse
 import json
@@ -32,6 +41,8 @@ import math
 
 HARTREE_EV = 27.211386245988
 KB_EV = 8.617333262e-5
+BOHR3_A3 = 0.529177210903 ** 3
+GPA_A3_EV = 6.241509074e-3   # 1 GPa * 1 A^3 in eV
 
 
 def expc(x):
@@ -41,6 +52,11 @@ def expc(x):
 class B2Model:
     def __init__(self, eps0, e_va, e_ba, e_vb, e_ab):
         self.eps0, self.e = eps0, {"V_a": e_va, "B_a": e_ba, "V_b": e_vb, "A_b": e_ab}
+
+    def at_pressure(self, p_gpa, omega0, vol):
+        """Model with enthalpies at pressure p (GPa); omega0 and vol[d] in A^3."""
+        f = p_gpa * GPA_A3_EV
+        return B2Model(self.eps0 + f * omega0, *(self.e[d] + f * vol[d] for d in ("V_a", "B_a", "V_b", "A_b")))
 
     def concentrations(self, mu_a, mu_b, kt):
         e = self.e
@@ -108,6 +124,9 @@ def main():
     ap.add_argument("--x", type=float, nargs="+", default=[0.48, 0.49, 0.50, 0.51, 0.52],
                     help="atomic fraction of the transition metal")
     ap.add_argument("--names", nargs=2, default=["TM", "Al"])
+    ap.add_argument("--p", type=float, nargs="+", default=[0.0], help="pressures in GPa")
+    ap.add_argument("--bulk-modulus", type=float, default=None,
+                    help="bulk modulus in GPa: estimate relaxation volumes of fixed-volume supercells from their pressure")
     args = ap.parse_args()
 
     def load(path):
@@ -124,12 +143,28 @@ def main():
     eps0 = e_perf / n_cells
     files = {"V_a": args.vac_a, "B_a": args.b_on_a, "V_b": args.vac_b, "A_b": args.a_on_b}
     expected_atoms = {"V_a": -1, "B_a": 0, "V_b": -1, "A_b": 0}
-    eps = {}
+    eps, vol = {}, {}
+    v_perf = perfect["volume"] * BOHR3_A3
+    omega0 = v_perf / n_cells
+    volume_mode = None
     for d, path in files.items():
         r = load(path)
         if r["n_atoms"] != perfect["n_atoms"] + expected_atoms[d]:
             raise SystemExit(f"{path}: unexpected number of atoms for defect {d}")
         eps[d] = energy(r) - e_perf
+        dv = r["volume"] * BOHR3_A3 - v_perf
+        if abs(dv) > 1e-6 * v_perf:
+            mode, vol[d] = "relaxed cells", dv
+        elif args.bulk_modulus and "pressure_GPa" in r and "pressure_GPa" in perfect:
+            # fixed volume: relaxation volume and elastic energy correction from the residual pressure
+            dp = r["pressure_GPa"] - perfect["pressure_GPa"]
+            mode, vol[d] = "residual pressure", v_perf * dp / args.bulk_modulus
+            eps[d] -= 0.5 * v_perf * dp * dp / args.bulk_modulus * GPA_A3_EV
+        else:
+            mode, vol[d] = None, 0.0
+        if volume_mode not in (None, mode) and mode != volume_mode:
+            raise SystemExit("inconsistent supercells: some are relaxed to zero pressure, others are not")
+        volume_mode = mode
     A, B = args.names
     label = {"V_a": f"V_{A}", "B_a": f"{B}_{A}", "V_b": f"V_{B}", "A_b": f"{A}_{B}"}
 
@@ -159,17 +194,41 @@ def main():
         txt = ", ".join(f"{k}: {v - ref:+.4f}" for k, v in opts.items())
         print(f"  {side}: stable constitutional defect = {best}   ({txt})")
 
-    model = B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"])
+    model0 = B2Model(eps0, eps["V_a"], eps["B_a"], eps["V_b"], eps["A_b"])
     order = ["V_a", "B_a", "V_b", "A_b"]
-    for T in args.T:
-        print(f"\nT = {T:.0f} K   (concentrations per sublattice site; E_eff in eV)")
-        print("   x_%-3s " % A + " ".join(f"{'c(' + label[d] + ')':>12s}" for d in order) + "  " +
-              " ".join(f"{'E(' + label[d] + ')':>9s}" for d in order) + f"   mu_{A}-mu_{B}")
-        for x in args.x:
-            ma, mb, c = model.solve(x, T)
-            ee = model.effective_energies(x, T)
-            print(f"   {x:.4f} " + " ".join(f"{c[d]:12.4e}" for d in order) + "  " +
-                  " ".join(f"{ee[d]:9.4f}" for d in order) + f"   {ma - mb:9.4f}")
+    have_vol = volume_mode is not None
+    if have_vol:
+        atomic = omega0 / 2.0
+        print(f"\nVolumes ({volume_mode}): Omega0 = {omega0:.4f} A^3 per formula unit; raw volume changes v_d [A^3]")
+        for d in order:
+            print(f"  {label[d]:8s} {vol[d]:12.4f}")
+        print("Formation volumes of the composition-conserving reactions [A^3 | atomic volumes]")
+        for name, v in ((reactions[0][0], 2 * vol["V_a"] + vol["A_b"] + omega0), (reactions[1][0], 2 * vol["V_b"] + vol["B_a"] + omega0),
+                        (reactions[2][0], vol["V_a"] + vol["V_b"] + omega0), (reactions[3][0], vol["B_a"] + vol["A_b"])):
+            print(f"  {name:42s} {v:10.4f} {v / atomic:8.3f}")
+    elif any(p != 0.0 for p in args.p):
+        raise SystemExit("pressure requested, but the supercells carry no volume information "
+                         "(use cellrelax cells, or stress = true together with --bulk-modulus)")
+    for p in args.p:
+        model = model0.at_pressure(p, omega0, vol) if have_vol else model0
+        for T in args.T:
+            head = f"\nT = {T:.0f} K, p = {p:g} GPa   (concentrations per sublattice site; E_eff in eV"
+            print(head + ("; V_eff in atomic volumes)" if have_vol else ")"))
+            print("   x_%-3s " % A + " ".join(f"{'c(' + label[d] + ')':>12s}" for d in order) + "  " +
+                  " ".join(f"{'E(' + label[d] + ')':>9s}" for d in order) +
+                  ("  " + " ".join(f"{'V(' + label[d] + ')':>8s}" for d in order) if have_vol else "") + f"   mu_{A}-mu_{B}")
+            for x in args.x:
+                ma, mb, c = model.solve(x, T)
+                ee = model.effective_energies(x, T)
+                line = f"   {x:.4f} " + " ".join(f"{c[d]:12.4e}" for d in order) + "  " + " ".join(f"{ee[d]:9.4f}" for d in order)
+                if have_vol:  # V_eff = -kT d ln c / dp by central differences
+                    dp = 0.05
+                    _, _, cp = model0.at_pressure(p + dp, omega0, vol).solve(x, T)
+                    _, _, cm = model0.at_pressure(p - dp, omega0, vol).solve(x, T)
+                    kt = KB_EV * T
+                    veff = {d: -kt * (math.log(cp[d]) - math.log(cm[d])) / (2 * dp * GPA_A3_EV) / (omega0 / 2.0) for d in order}
+                    line += "  " + " ".join(f"{veff[d]:8.3f}" for d in order)
+                print(line + f"   {ma - mb:9.4f}")
 
 
 if __name__ == "__main__":

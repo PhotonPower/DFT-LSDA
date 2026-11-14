@@ -184,6 +184,19 @@ Dichte G-Kugel (`dense_factor`, bei ecut = 25 Ha): Faktor 4 → 16 ändert die E
   17 Iterationen (Pulay-Historie und Wellenfunktionen liegen im Checkpoint). Ohne gespeicherte Historie
   waren es 25.
 
+## 7b. Zustandsdichte, NEB, Bildungsvolumina
+
+* **Zustandsdichte** (FeAl, 4×4×4): Integral der Gesamt-DOS = Zahl der Bänder (16.9999 von 17 je Spin),
+  Zustände unterhalb E_F = 18.993 (19 Elektronen); mit und ohne Symmetrie stimmen Gesamt- und projizierte
+  DOS im Bereich −8 … +3 eV auf 6e-5 Zustände/eV überein, die integrierten Kugelanteile auf 2e-5.
+* **NEB**: Der Band-Optimierer findet auf der Müller-Brown-Fläche den Sattelpunkt zwischen zwei Minima
+  (Energie auf 2e-6, Position auf 1e-5, 148 Schritte, 7 Bilder + Climbing Image). Die DFT-Anbindung ist nur
+  als Durchlauf getestet (gleiche Endpunktenergien, sinkende Pfadenergie, Neustart setzt an den
+  gespeicherten Bildpositionen fort); eine echte Wanderungsbarriere wurde **nicht** gerechnet.
+* **Bildungsvolumina** (`defect_thermo.py`, synthetische Daten): effektives Bildungsvolumen des
+  Tripeldefekts = V_triple/3; relaxierte Zellen und der Weg über Restdruck + Kompressionsmodul liefern
+  identische Konzentrationen und Volumina.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

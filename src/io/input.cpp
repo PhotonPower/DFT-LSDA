@@ -101,6 +101,9 @@ Input read_input(const std::string& path) {
   take("task", [&](const std::string& v) { inp.task = lower(v); });
   take("prefix", [&](const std::string& v) { inp.prefix = v; });
   take("stress", [&](const std::string& v) { inp.stress = to_bool(v, "stress"); });
+  take("dos", [&](const std::string& v) { inp.dos = to_bool(v, "dos"); });
+  take("dos_width", [&](const std::string& v) { inp.dos_width = to_double(v, "dos_width"); });
+  take("dos_points", [&](const std::string& v) { inp.dos_points = static_cast<int>(to_double(v, "dos_points")); });
   take("restart", [&](const std::string& v) { inp.restart = to_bool(v, "restart"); });
   take("pseudo_dir", [&](const std::string& v) { pseudo_dir = v[0] == '/' ? v : dirname(path) + "/" + v; });
   take("units", [&](const std::string& v) { units = lower(v); });
@@ -150,9 +153,13 @@ Input read_input(const std::string& path) {
   take("cell_modulus", [&](const std::string& v) { inp.cell.modulus = to_double(v, "cell_modulus") / gpa; });
   take("cell_steps", [&](const std::string& v) { inp.cell.max_steps = static_cast<int>(to_double(v, "cell_steps")); });
   take("max_strain", [&](const std::string& v) { inp.cell.max_strain = to_double(v, "max_strain"); });
+  take("neb_images", [&](const std::string& v) { inp.neb.n_images = static_cast<int>(to_double(v, "neb_images")); });
+  take("neb_spring", [&](const std::string& v) { inp.neb.spring = to_double(v, "neb_spring"); });
+  take("neb_climb", [&](const std::string& v) { inp.neb.climb = to_bool(v, "neb_climb"); });
+  take("neb_steps", [&](const std::string& v) { inp.neb.max_steps = static_cast<int>(to_double(v, "neb_steps")); });
   LSDA_CHECK(inp.task == "scf" || inp.task == "forces" || inp.task == "stress" || inp.task == "relax" ||
-                 inp.task == "cellrelax",
-             "input: task must be scf, forces, stress, relax or cellrelax");
+                 inp.task == "cellrelax" || inp.task == "neb",
+             "input: task must be scf, forces, stress, relax, cellrelax or neb");
   if (inp.task == "stress" || inp.task == "cellrelax") inp.stress = true;
   // a cell optimization needs an energy that is a smooth function of the cell at constant cutoff
   if (inp.task == "cellrelax" && !smooth_given) p.ecut_smooth = 0.5;
@@ -214,8 +221,29 @@ Input read_input(const std::string& path) {
     if (t.size() == 5) at.magmom = to_double(t[4], "atoms");
     inp.crystal.atoms.push_back(at);
   }
+  // second end point of a NEB path: same atoms in the same order
+  if (blocks.count("atoms_final")) {
+    LSDA_CHECK(blocks["atoms_final"].size() == inp.crystal.atoms.size(), "input: atoms_final needs the same number of atoms as atoms");
+    for (size_t ia = 0; ia < blocks["atoms_final"].size(); ++ia) {
+      const auto t = split(blocks["atoms_final"][ia]);
+      LSDA_CHECK(t.size() >= 4, "input: atoms_final line must be '<label> x y z'");
+      LSDA_CHECK(t[0] == inp.crystal.species[inp.crystal.atoms[ia].species].name, "input: atoms_final must list the atoms in the same order");
+      Vec3 v;
+      for (int j = 0; j < 3; ++j) v[j] = to_double(t[1 + j], "atoms_final");
+      if (coordinates == "cartesian") {
+        for (double& c : v) c *= length;
+        v = inp.crystal.frac_from_cart(v);
+      }
+      inp.frac_final.push_back(v);
+    }
+  }
+  LSDA_CHECK(inp.task != "neb" || !inp.frac_final.empty(), "input: task = neb needs the block 'atoms_final'");
+  inp.neb.force_tol = inp.relax.force_tol;
+  inp.neb.max_step = inp.relax.max_step;
+  inp.neb.prefix = inp.prefix;
+  inp.neb.restart = inp.restart;
   for (const auto& [name, lines] : blocks)
-    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms",
+    LSDA_CHECK(name == "lattice" || name == "basis_lattice" || name == "species" || name == "atoms" || name == "atoms_final",
                "input: unknown block '" + name + "'");
   return inp;
 }

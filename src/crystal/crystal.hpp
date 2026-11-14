@@ -28,6 +28,9 @@ struct Crystal {
   Mat3 A_cut{}, B_cut{};
   std::vector<Species> species;
   std::vector<Atom> atoms;
+  // Further sets of fractional positions (same atom order) that every symmetry operation has to map onto
+  // themselves with the same permutation of atoms, e.g. the end points of a transition path.
+  std::vector<std::vector<Vec3>> sym_constraints;
 
   void set_lattice(const Mat3& a);              // also resets the basis reference lattice
   void set_basis_lattice(const Mat3& a);

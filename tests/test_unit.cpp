@@ -13,6 +13,7 @@
 #include "dft/eigensolver.hpp"
 #include "dft/hamiltonian.hpp"
 #include "dft/mixer.hpp"
+#include "dft/neb.hpp"
 #include "dft/occupations.hpp"
 #include "math/radial.hpp"
 #include "math/special.hpp"
@@ -451,6 +452,51 @@ static void test_occupations_mixer() {
   check(res < 1e-5, "Pulay mixer: linear problem solved after n+1 steps", res);
 }
 
+// Nudged elastic band with climbing image on the Mueller-Brown surface (scaled by 1/100):
+// minima at (-0.558, 1.442) and (-0.050, 0.467), saddle point between them at (-0.822, 0.624), V = -40.665
+static void test_neb() {
+  std::printf("nudged elastic band\n");
+  const double A[4] = {-200, -100, -170, 15}, a[4] = {-1, -1, -6.5, 0.7}, b[4] = {0, 0, 11, 0.6}, c[4] = {-10, -10, -6.5, 0.7};
+  const double x0[4] = {1, 0, -0.5, -1}, y0[4] = {0, 0.5, 1.5, 1};
+  auto potential = [&](const BandCoords& r, BandCoords& f) {
+    double v = 0.0;
+    f.assign(1, Vec3{0, 0, 0});
+    for (int k = 0; k < 4; ++k) {
+      const double dx = r[0][0] - x0[k], dy = r[0][1] - y0[k];
+      const double e = 0.01 * A[k] * std::exp(a[k] * dx * dx + b[k] * dx * dy + c[k] * dy * dy);
+      v += e;
+      f[0][0] -= e * (2 * a[k] * dx + b[k] * dy);
+      f[0][1] -= e * (b[k] * dx + 2 * c[k] * dy);
+    }
+    return v;
+  };
+  const int ntot = 9;
+  std::vector<BandCoords> R(ntot, BandCoords(1));
+  const Vec3 ra{-0.5582236346, 1.4417258418, 0}, rb{-0.0500108229, 0.4666941049, 0};
+  for (int i = 0; i < ntot; ++i)
+    for (int k = 0; k < 3; ++k) R[i][0][k] = ra[k] + (rb[k] - ra[k]) * i / (ntot - 1.0);
+  std::vector<double> E(ntot);
+  BandCoords ftmp;
+  E[0] = potential(R[0], ftmp);
+  E[ntot - 1] = potential(R[ntot - 1], ftmp);
+  NebParams np;
+  np.spring = 1.0;
+  np.force_tol = 1e-5;
+  np.max_step = 0.05;
+  np.max_steps = 3000;
+  int evaluations = 0;
+  const NebResult r = optimize_band(R, E, [&](int, const BandCoords& x, double& e, BandCoords& f) {
+    e = potential(x, f);
+    ++evaluations;
+    return true;
+  }, np, nullptr, false);
+  check(r.converged, strf("NEB converged (%d steps)", r.steps), r.max_force);
+  check(std::abs(r.energy[r.saddle] + 0.40665) < 1e-5, "NEB: saddle-point energy of the Mueller-Brown surface", std::abs(r.energy[r.saddle] + 0.40665));
+  const double dpos = std::hypot(R[r.saddle][0][0] + 0.8220, R[r.saddle][0][1] - 0.6243);
+  check(dpos < 1e-3, "NEB: saddle-point position", dpos);
+  check(std::abs(E[0] + 1.46700) < 1e-5 && std::abs(E[ntot - 1] + 0.80768) < 1e-5, "NEB: end-point energies", std::abs(E[0] + 1.46700));
+}
+
 // Iterative eigensolvers against dense diagonalization of the full PAW Hamiltonian matrix
 static void test_eigensolvers(const std::string& dir) {
   std::printf("eigensolvers\n");
@@ -530,6 +576,7 @@ int main(int argc, char** argv) {
     test_fft_linalg();
     test_symmetry();
     test_occupations_mixer();
+    test_neb();
     test_eigensolvers(dir);
     test_paw(dir, false);
     test_paw(dir, true);

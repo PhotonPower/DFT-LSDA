@@ -112,6 +112,14 @@ std::vector<SymOp> find_symmetry(const Crystal& c, bool enabled, double tol) {
         }
         if (map[a] < 0) all = false;
       }
+      for (const auto& pos : c.sym_constraints) {  // same operation and permutation for the constraint sets
+        if (!all) break;
+        for (int a = 0; a < nat && all; ++a) {
+          const Vec3 y = apply(pos[a]);
+          for (int i = 0; i < 3; ++i)
+            if (std::abs(wrap_diff(y[i] + t[i] - pos[map[a]][i])) > tol) all = false;
+        }
+      }
       if (!all) continue;
       SymOp op;
       Mat3 Wd;

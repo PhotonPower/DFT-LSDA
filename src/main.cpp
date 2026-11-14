@@ -37,6 +37,25 @@ int main(int argc, char** argv) {
       logf("    %-4s Z = %-4g valence = %-4g r_paw = %.3f bohr  projectors = %-2d  %s\n", s.name.c_str(), s.setup.Z,
            s.setup.n_valence, s.setup.r_paw, s.setup.ni, s.file.c_str());
     const std::string chk = inp.prefix + ".chk", json = inp.prefix + ".json";
+    if (inp.task == "neb") {
+      const NebResult r = run_neb(inp.crystal, inp.frac_final, inp.params, inp.neb);
+      if (r.stopped) {
+        logf("\n  Stopped by the wall-time limit; rerun with 'restart = true' to continue the path optimization.\n");
+        return 4;
+      }
+      logf(r.converged ? "\n  NEB converged after %d steps\n" : "\n  WARNING: NEB NOT converged after %d steps\n", r.steps);
+      logf("\n  image   path length (bohr)   free energy (Ha)      relative (eV)\n");
+      for (size_t i = 0; i < r.energy.size(); ++i)
+        logf("  %4zu   %14.6f   %18.10f   %12.5f%s\n", i, r.distance[i], r.energy[i], (r.energy[i] - r.energy[0]) * hartree_in_ev,
+             static_cast<int>(i) == r.saddle ? "   <- highest image" : "");
+      logf("\n  Barrier: %.5f eV (forward), %.5f eV (backward)\n", (r.energy[r.saddle] - r.energy[0]) * hartree_in_ev,
+           (r.energy[r.saddle] - r.energy.back()) * hartree_in_ev);
+      write_neb_results(inp.prefix + ".neb.json", inp.crystal, r);
+      logf("  Path written to %s.neb.json\n", inp.prefix.c_str());
+      print_timings();
+      logf("\n  Total wall time: %.1f s\n", wall_time());
+      return r.converged ? 0 : 3;
+    }
     bool restart_positions = false;
     if (inp.restart) {
       std::vector<Vec3> frac;
@@ -121,6 +140,11 @@ int main(int argc, char** argv) {
       logf("    pressure = %.6f GPa\n", -(sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0 * gpa);
     }
     write_results(json, calc, converged, forces.empty() ? nullptr : &forces, inp.stress ? &sigma : nullptr);
+    if (inp.dos) {
+      const std::string dos_file = inp.prefix + ".dos";
+      calc.write_dos(dos_file, inp.dos_width > 0.0 ? inp.dos_width : calc.params().width, inp.dos_points);
+      logf("\n  Density of states written to %s\n", dos_file.c_str());
+    }
     logf("\n  Results written to %s (checkpoint: %s)\n", json.c_str(), chk.c_str());
     print_timings();
     logf("\n  Total wall time: %.1f s\n", wall_time());

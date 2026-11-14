@@ -93,6 +93,9 @@ class Calculation {
   const Params& params() const { return p_; }
   double fermi_level(int s = 0) const { return occ_.efermi[s]; }
   double total_magnetization() const { return occ_.n_spin[0] - occ_.n_spin[1]; }
+  // Density of states (Gaussian broadening, width in Ha) and its projection on the PAW spheres, resolved
+  // by atom, angular momentum and spin. Text file: energy relative to the Fermi level in eV, states/eV.
+  void write_dos(const std::string& path, double width, int npoints) const;
   std::vector<double> local_moments() const;   // all-electron moments inside the PAW spheres
   std::vector<double> local_charges() const;   // valence electrons inside the PAW spheres
   int n_symmetry_ops() const { return static_cast<int>(ops_.size()); }

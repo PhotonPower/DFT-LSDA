@@ -1039,6 +1039,86 @@ bool Calculation::scf() {
   return converged;
 }
 
+void Calculation::write_dos(const std::string& path, double width, int npoints) const {
+  LSDA_CHECK(have_occ_, "write_dos: run scf() first");
+  LSDA_CHECK(width > 0.0 && npoints > 1, "write_dos: width and number of points must be positive");
+  const int nat = c_.natoms(), nk = static_cast<int>(kpts_.size());
+  int lmax = 0;
+  std::vector<int> offset(nat);
+  for (int a = 0, off = 0; a < nat; ++a) {
+    offset[a] = off;
+    off += c_.setup(a).ni;
+    lmax = std::max(lmax, c_.setup(a).lmax);
+  }
+  const int nl = lmax + 1, ncol = nspin_ * (1 + nat * nl);  // per spin: total, then (atom, l)
+  double emin = 1e300, emax = -1e300;
+  for (const auto& e : eig_)
+    for (double v : e) {
+      emin = std::min(emin, v);
+      emax = std::max(emax, v);
+    }
+  emin -= 6.0 * width;
+  emax += 6.0 * width;
+  const double de = (emax - emin) / (npoints - 1), deg = nspin_ == 1 ? 2.0 : 1.0;
+  std::vector<double> dos(static_cast<size_t>(npoints) * ncol, 0.0);
+  // sphere weights of every state for the atoms: sum_{ij in (a,l)} P_i^* <phi_i|phi_j> P_j; with reduced
+  // k-points the weight of atom a is the average over the symmetry-equivalent atoms g(a)
+  std::vector<double> w(static_cast<size_t>(nat) * nl), wsym(static_cast<size_t>(nat) * nl);
+  for (int ik = 0; ik < nk; ++ik)
+    for (int s = 0; s < nspin_; ++s) {
+      const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
+      const CMatrix& P = proj_psi_[ks];
+      for (int n = 0; n < nbands_; ++n) {
+        std::fill(w.begin(), w.end(), 0.0);
+        for (int a = 0; a < nat; ++a) {
+          const PawSetup& su = c_.setup(a);
+          for (int i = 0; i < su.ni; ++i)
+            for (int j = 0; j < su.ni; ++j)
+              if (su.L_i[i] == su.L_i[j])
+                w[a * nl + su.l_i[i]] += su.dN(i, j) * (std::conj(P(offset[a] + i, n)) * P(offset[a] + j, n)).real();
+        }
+        std::fill(wsym.begin(), wsym.end(), 0.0);
+        for (const SymOp& op : ops_)
+          for (int a = 0; a < nat; ++a)
+            for (int l = 0; l < nl; ++l) wsym[a * nl + l] += w[op.atom_map[a] * nl + l];
+        const double norm = deg * kweight_[ik] / (std::sqrt(pi) * width) / static_cast<double>(ops_.size());
+        const double e = eig_[ks][n];
+        const int i0 = std::max(0, static_cast<int>((e - 6.0 * width - emin) / de));
+        const int i1 = std::min(npoints - 1, static_cast<int>((e + 6.0 * width - emin) / de) + 1);
+        for (int i = i0; i <= i1; ++i) {
+          const double x = (emin + i * de - e) / width;
+          const double g = norm * std::exp(-x * x);
+          double* row = &dos[static_cast<size_t>(i) * ncol + s * (1 + nat * nl)];
+          row[0] += g * static_cast<double>(ops_.size());
+          for (int c = 0; c < nat * nl; ++c) row[1 + c] += g * wsym[c];
+        }
+      }
+    }
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  LSDA_CHECK(f != nullptr, "cannot write '" + path + "'");
+  const char lname[] = "spdfg";
+  std::fprintf(f, "# density of states, Gaussian width %.5f Ha; energies in eV relative to the Fermi level (%.6f Ha)\n", width,
+               occ_.efermi[0]);
+  std::fprintf(f, "# states/eV per cell%s; projections: all-electron weight inside the PAW spheres\n",
+               nspin_ == 1 ? " (both spins)" : " and spin");
+  std::fprintf(f, "# columns: 1 E-E_F");
+  int col = 2;
+  for (int s = 0; s < nspin_; ++s) {
+    const char* sp = nspin_ == 1 ? "" : (s == 0 ? "_up" : "_dn");
+    std::fprintf(f, " | %d total%s", col++, sp);
+    for (int a = 0; a < nat; ++a)
+      for (int l = 0; l < nl; ++l)
+        std::fprintf(f, " | %d %s%d_%c%s", col++, c_.species[c_.atoms[a].species].name.c_str(), a + 1, lname[std::min(l, 4)], sp);
+  }
+  std::fprintf(f, "\n");
+  for (int i = 0; i < npoints; ++i) {
+    std::fprintf(f, "%12.6f", (emin + i * de - occ_.efermi[0]) * hartree_in_ev);
+    for (int c = 0; c < ncol; ++c) std::fprintf(f, " %12.6e", dos[static_cast<size_t>(i) * ncol + c] / hartree_in_ev);
+    std::fprintf(f, "\n");
+  }
+  std::fclose(f);
+}
+
 std::vector<double> Calculation::local_moments() const {
   std::vector<double> m(c_.natoms(), 0.0);
   if (nspin_ == 1) return m;

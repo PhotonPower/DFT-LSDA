@@ -155,7 +155,7 @@ def relax_and_restart(lsda, pseudo, tmp):
         failures += not ok
         print(f"[{' ok ' if ok else 'FAIL'}] {what:42s} {value:.2e} (tolerance {tol:.0e})")
 
-    ideal = run("ideal", "task = scf\n" + NIAL % "0.5")
+    ideal = run("ideal", "task = scf\ndos = true\n" + NIAL % "0.5")
     relaxed = run("relaxed", "task = relax\nforce_tol = 2e-5\n" + NIAL % "0.53")
     if ideal is None or relaxed is None:
         return failures + 1
@@ -170,6 +170,24 @@ def relax_and_restart(lsda, pseudo, tmp):
     check(de < 1e-8, "restart: same energy from checkpoint", de, 1e-8)
     check(again["scf_iterations"] < ideal["scf_iterations"], "restart: fewer SCF iterations",
           again["scf_iterations"], ideal["scf_iterations"])
+    # density of states: number of states below the Fermi level = number of electrons
+    rows = [[float(x) for x in l.split()] for l in open(os.path.join(tmp, "ideal.dos")) if not l.startswith("#")]
+    nel = sum(r[1] for r in rows if r[0] < 0) * (rows[1][0] - rows[0][0])
+    check(abs(nel - ideal["n_electrons"]) < 0.1, "density of states integrates to the electron number", abs(nel - ideal["n_electrons"]), 0.1)
+    # nudged elastic band, plumbing only (the optimizer itself is unit-tested on an analytic surface):
+    # Al moved by one lattice vector -> equal end-point energies, positive barrier, path file written
+    neb_in = "task = neb\nneb_images = 1\nneb_steps = 1\nkpoints = 2 2 2\n" + (NIAL % "0.5").replace("kpoints = 3 3 3\n", "") + \
+        "begin atoms_final\n Ni 0 0 0\n Al 1.5 0.5 0.5\nend\n"
+    with open(os.path.join(tmp, "path.in"), "w") as f:
+        f.write(f"prefix = path\npseudo_dir = {pseudo}\n" + neb_in)
+    out = subprocess.run([lsda, "path.in"], cwd=tmp, capture_output=True, text=True)
+    try:
+        nb = json.load(open(os.path.join(tmp, "path.neb.json")))
+        ends = abs(nb["images"][0]["free_energy"] - nb["images"][-1]["free_energy"])
+        check(out.returncode in (0, 3) and ends < 1e-8 and nb["barrier_forward_eV"] > 0.5, "NEB task: end points and barrier", ends, 1e-8)
+    except Exception as e:  # noqa: BLE001
+        print(f"[FAIL] NEB task: {e}\n{out.stdout[-800:]}{out.stderr}")
+        failures += 1
     # interrupted SCF (here: iteration limit; the wall-time limit max_seconds uses the same path):
     # the checkpoint holds the unconverged density and wavefunctions, the restart must finish the job
     with open(os.path.join(tmp, "cut.in"), "w") as f:
