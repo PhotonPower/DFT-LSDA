@@ -1,0 +1,23 @@
+# B2 NiAl, primitive cell (non-magnetic)
+task       = scf
+prefix     = NiAl
+pseudo_dir = ../../pseudos
+ecut       = 20          # Ha, wavefunctions
+kpoints    = 12 12 12
+smearing   = cold
+width      = 0.01        # Ha
+units      = angstrom
+scale      = 2.834       # LDA lattice constant
+begin lattice
+  1 0 0
+  0 1 0
+  0 0 1
+end
+begin species
+  Ni Ni.LDA_PW-JTH.xml
+  Al Al.LDA_PW-JTH.xml
+end
+begin atoms
+  Ni 0.0 0.0 0.0
+  Al 0.5 0.5 0.5
+end

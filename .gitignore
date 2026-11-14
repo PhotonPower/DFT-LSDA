@@ -1,0 +1,10 @@
+build/
+*.out
+*.json
+!tests/*.json
+__pycache__/
+.DS_Store
+*.chk
+*.chk.tmp
+examples/defects/*Al_n*/
+!CMakePresets.json

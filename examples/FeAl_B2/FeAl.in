@@ -1,0 +1,24 @@
+# B2 FeAl, primitive cell, spin-polarized (LSDA)
+task       = scf
+prefix     = FeAl
+pseudo_dir = ../../pseudos
+ecut       = 20
+kpoints    = 14 14 14
+nspin      = 2
+smearing   = cold
+width      = 0.005
+units      = angstrom
+scale      = 2.81
+begin lattice
+  1 0 0
+  0 1 0
+  0 0 1
+end
+begin species
+  Fe Fe.LDA_PW-JTH.xml
+  Al Al.LDA_PW-JTH.xml
+end
+begin atoms
+  Fe 0.0 0.0 0.0  1.0     # initial magnetic moment (mu_B)
+  Al 0.5 0.5 0.5
+end

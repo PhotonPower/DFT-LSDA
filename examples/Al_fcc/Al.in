@@ -1,0 +1,21 @@
+# fcc aluminium, primitive cell
+task       = scf
+prefix     = Al
+pseudo_dir = ../../pseudos
+ecut       = 15          # Ha
+kpoints    = 8 8 8
+smearing   = cold
+width      = 0.01
+units      = angstrom
+scale      = 3.98        # lattice constant (LDA)
+begin lattice
+  0.0 0.5 0.5
+  0.5 0.0 0.5
+  0.5 0.5 0.0
+end
+begin species
+  Al Al.LDA_PW-JTH.xml
+end
+begin atoms
+  Al 0 0 0
+end

@@ -1,0 +1,143 @@
+# Verifikation und Validierung
+
+Alle Zahlen wurden mit diesem Code auf einem Apple A18 Pro (6 Kerne, 8 GB) erzeugt.
+Einheiten: Hartree (Ha), Bohr, sofern nicht anders angegeben.
+
+## 1. Bausteintests (`build/test_unit`)
+
+| Test | Abweichung |
+|---|---|
+| sphärische Bessel-Funktionen j_l, l ≤ 6, gegen geschlossene Formeln/Rekursion | 1e-15 |
+| Orthonormalität der reellen Y_lm (l ≤ 6), Gaunt-Koeffizienten, Rotationsmatrizen | 1e-14 |
+| Simpson-Quadratur, radiale Hartree-Potentiale (l = 0, 2) gegen analytische Ergebnisse | 1e-9 |
+| Bessel-Transformation + Tabelleninterpolation (Gauß-Funktionen) | 3e-12 |
+| PW92-Korrelationsenergie (ζ = 0: r_s = 1, 2, 5) | 4e-7 |
+| v_xc = ∂e_xc/∂n_σ (finite Differenzen) | < 1e-7 |
+| FFT-Konvention, verallgemeinertes Eigenwertproblem | 1e-13 |
+| Symmetrie: 48 Operationen für B2/fcc, irreduzible k-Punkte (4³ → 10 bzw. 4; fcc 8³ → 29) | exakt |
+| Besetzungsfunktionen: s′(x) = x f′(x) für alle vier Verschmierungen | 6e-11 |
+| PAW-Datensätze: Rumpfladung, Dualität ⟨p̃ᵢ\|φ̃ⱼ⟩ = δᵢⱼ | 1e-13 (Al), 1.5e-5 (Fe/Ni, Eigenschaft der Datensätze) |
+| On-site-Hamiltonoperator ΔH = ∂ΔE/∂D (finite Differenzen), Spin-Konsistenz | < 2e-7 |
+
+| PPCG (Block 1 und 4) und LOBPCG gegen dichte Diagonalisierung der vollen PAW-Matrix (trikline Zelle, Ni + Al) | 1e-15 (Eigenwerte) |
+
+Regressionstests (`tests/run_regression.py`, ~30 s): gespeicherte Energien/Kräfte für fcc-Al, B2-NiAl
+(PPCG und LOBPCG) und verzerrtes ferromagnetisches FeAl; Relaxation einer verzerrten NiAl-Zelle findet
+die Idealstruktur (Energie auf 2e-8 Ha, Position auf 5e-5) wieder; Neustart aus dem Checkpoint
+reproduziert die Energie (2e-12 Ha) in 3 statt ~13 SCF-Schritten.
+
+## 2. Isoliertes Atom gegen die All-Elektronen-Referenz
+
+Al-Atom (sphärisch, nicht spinpolarisiert, 3s² 3p¹) in einer kubischen Box, Γ-Punkt. Die
+Gesamtenergie muss die All-Elektronen-Energie des Referenzatoms im Datensatz reproduzieren
+(`ae_energy total` = −241.766039 Ha); das prüft das komplette PAW-Energiefunktional
+(Hartree, XC, Null-Potential, Kompensationsladungen, alle On-site-Terme).
+
+| Box L (Bohr) | ecut (Ha) | E (Ha) | E − E_AE (mHa) |
+|---|---|---|---|
+| 14 | 15 | −241.763818 | +2.221 |
+| 18 | 15 | −241.765573 | +0.466 |
+| 24 | 15 | −241.765995 | +0.045 |
+| 30 | 15 | −241.766023 | +0.017 |
+| 24 | 25 | −241.766007 | +0.032 |
+
+Der Restfehler (17 µHa bei L = 30) fällt weiter mit Boxgröße und Cutoff.
+
+## 3. Kräfte gegen finite Differenzen
+
+Verzerrtes B2-FeAl (Al um (0.04, 0.03, −0.02)·a verschoben), spinpolarisiert (M = 1.05 µB),
+ohne Symmetrie, 3×3×3 k-Punkte. Zentrale Differenzen der freien Energie mit h = 0.01 Bohr:
+
+| Komponente | analytisch (Ha/Bohr) | finite Differenz | Differenz |
+|---|---|---|---|
+| F_x(Al) | −0.01842093 | −0.01842038 | 5.5e-7 |
+| F_z(Al) | +0.00961736 | +0.00961705 | 3.1e-7 |
+
+Summe aller Kräfte: 1e-7 Ha/Bohr.
+
+## 4. Symmetrie und Löser
+
+| Vergleich (NiAl, ecut 20, 4×4×4) | freie Energie (Ha) |
+|---|---|
+| mit Symmetrie (10 k-Punkte) | −1760.3107867541 |
+| ohne Symmetrie (36 k-Punkte) | −1760.3107867541 |
+| PPCG | −1760.3107867541 |
+| LOBPCG | −1760.3107867541 |
+
+15-Atom-Superzelle (NiAl mit Ni-Leerstelle): PPCG und LOBPCG stimmen auf 5e-10 Ha überein.
+
+## 5. Zustandsgleichungen (Birch-Murnaghan, 5 Volumina, cold smearing 0.01 Ha)
+
+| System | a₀ (Å) | B₀ (GPa) | Moment (µB) | typische LDA-Literaturwerte¹ |
+|---|---|---|---|---|
+| Al (fcc), ecut 15, 14³ | 3.980 | 82.5 | – | a ≈ 3.98–3.99, B ≈ 82–84 |
+| NiAl (B2), ecut 20, 12³ | 2.834 | 185 | – | a ≈ 2.83–2.84, B ≈ 185–195 |
+| FeAl (B2, unmagnetisch), ecut 20, 12³ | 2.808 | 208 | – | a ≈ 2.81–2.82, B ≈ 200–210 |
+| FeAl (B2, ferromagnetisch), ecut 20, 12³ | 2.813 | 194² | 0.64 | Moment ≈ 0.6–0.7 |
+| Fe (bcc), ecut 20, 14³ | 2.752 | 251 | 2.04 | a ≈ 2.75–2.76, B ≈ 245–255, M ≈ 2.0 |
+| Ni (fcc), ecut 20, 14³ | 3.425 | 270³ | 0.61 | a ≈ 3.42–3.43, B ≈ 250–260, M ≈ 0.6 |
+
+¹ Größenordnungen aus All-Elektronen-LDA-Rechnungen der Literatur, aus dem Gedächtnis zitiert und
+nicht einzeln nachgeschlagen; für eine Veröffentlichung bitte gegen eine Referenzrechnung
+(z. B. ABINIT/GPAW mit denselben JTH-Datensätzen) prüfen. Experimentelle Gitterkonstanten liegen
+wegen der bekannten LDA-Überbindung 1–3 % höher.
+² Der Fit überdeckt den Übergang unmagnetisch → ferromagnetisch (bei a ≤ 2.73 Å verschwindet das Moment).
+³ Bei ecut = 20 Ha ist E(V) für Ni um einige µHa verrauscht (B₀′ = 9 unphysikalisch); für Ni-haltige
+Systeme ecut ≥ 25 Ha verwenden (siehe Abschnitt 6).
+
+Kohäsionsenergie von Al relativ zum (unpolarisierten, sphärischen) Referenzatom: 4.18 eV.
+
+## 6. Konvergenz der Abschneideparameter (B2-Zelle, 8×8×8)
+
+Energiedifferenz ΔE = E(a₂) − E(a₁) zwischen zwei Gitterkonstanten (mHa):
+
+| ecut (Ha) | NiAl (2.77 / 2.89 Å) | FeAl (2.75 / 2.87 Å) |
+|---|---|---|
+| 15 | −3.553 | −0.323 |
+| 20 | −1.037 | −0.233 |
+| 25 | −0.895 | −0.219 |
+| 30 | −0.964 | −0.215 |
+| 40 | −0.956 | −0.209 |
+
+Die absolute Energie von NiAl konvergiert wegen der Ni-3s/3p-Semicore-Zustände langsam
+(noch −8 mHa von 30 auf 40 Ha); dieser atomare Beitrag hebt sich in Reaktionen mit erhaltener
+Teilchenzahl heraus. Empfehlung: **ecut = 25–30 Ha**.
+
+Dichte G-Kugel (`dense_factor`, bei ecut = 25 Ha): Faktor 4 → 16 ändert die Energie um
+3e-7 Ha (NiAl) bzw. 1.4e-6 Ha (FeAl); ab Faktor 6 < 1e-7 Ha.
+
+## 7. SCF-Verhalten
+
+* Mischfaktor 0.3 für Ladung und Magnetisierung konvergiert alle Testfälle in 10–25 Schritten.
+  Größere Faktoren (≥ 0.4–0.5) können bei Fe-haltigen, schwach magnetischen Zellen stagnieren.
+* Alle konvergierten Läufe mit unterschiedlichen Mischparametern und Lösern landen auf derselben
+  Energie (Streuung < 1e-9 Ha).
+* B2-FeAl hat in der LSDA eine sehr flache Energie als Funktion des Moments (ferromagnetisch nur
+  ~0.25 mHa unter unmagnetisch bei a = 2.81 Å). Bei grober k-Punkt-Abtastung/breiter Verschmierung
+  kann die Rechnung in die unmagnetische Lösung laufen; für FeAl feinere Gitter und
+  `width ≤ 0.005` verwenden und das Moment kontrollieren (`fixed_moment` für Scans).
+
+## 8. Laufzeit (Laptop, nur zur Orientierung)
+
+NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),
+10 irreduzible k-Punkte, 18 SCF-Schritte bis |Residuum|² < 1e-9:
+
+| Löser | Wandzeit |
+|---|---|
+| LOBPCG, 4 Schritte/SCF-Schritt, Zufallsstart (erste Version) | 142 s |
+| LOBPCG, 2 Schritte/SCF-Schritt | 100 s |
+| PPCG + LCAO-Start (Standard) | 65–80 s |
+
+Im PPCG-Lauf entfallen etwa 40 % auf die FFTs und 45 % auf dichte lineare Algebra; bei größeren Zellen
+wächst der Anteil der linearen Algebra (O(N³)).
+
+## 9. Noch nicht gerechnet
+
+Die Produktionsrechnungen für die Defektenergien (relaxierte 16-/54-/128-Atom-Superzellen für NiAl und
+FeAl) wurden auf dem Entwicklungsrechner **nicht** durchgeführt. Getestet ist die Kette bis dorthin:
+SCF und Kräfte für eine 15-Atom-Leerstellenzelle, die Relaxation (kleine Zelle), der Workflow
+`run_defects.sh` als Durchlauftest mit einer Minimalzelle (physikalisch ohne Aussage) und das
+Thermodynamik-Modell an synthetischen Daten mit bekannten analytischen Grenzfällen
+(Tripeldefekt: E_eff = E_triple/3; konstitutionelle Leerstellen c_V = (1 − 2x)/(1 − x)).
+Ebenfalls offen: Konvergenz der Defektenergien mit der Superzellengröße und ein Vergleich mit einem
+Referenzcode (z. B. ABINIT mit denselben JTH-Datensätzen).

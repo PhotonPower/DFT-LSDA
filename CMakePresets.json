@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "macos-gcc",
+      "displayName": "macOS, Homebrew GCC (OpenMP) + Accelerate + FFTW",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++-16", "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux, system compiler + OpenBLAS/MKL + FFTW",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ]
+}
