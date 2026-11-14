@@ -9,17 +9,20 @@
 namespace lsda {
 
 struct Input {
-  std::string task = "scf";  // scf | forces | relax
+  std::string task = "scf";  // scf | forces | stress | relax | cellrelax
+  bool stress = false;       // compute the stress tensor after the final SCF (implied by task = stress)
   std::string prefix = "lsda";
   bool restart = false;      // continue from <prefix>.chk (positions, density, density matrices)
   Crystal crystal;
   Params params;
   RelaxParams relax;
+  CellRelaxParams cell;
 };
 
 Input read_input(const std::string& path);
 
 // machine-readable summary of a finished calculation (JSON)
-void write_results(const std::string& path, const Calculation& calc, bool converged, const std::vector<Vec3>* forces);
+void write_results(const std::string& path, const Calculation& calc, bool converged, const std::vector<Vec3>* forces,
+                   const Mat3* stress = nullptr);
 
 }  // namespace lsda

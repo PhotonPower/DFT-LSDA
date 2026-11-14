@@ -17,6 +17,7 @@ B2-Aluminiden NiAl und FeAl, aber allgemein für periodische Kristalle einsetzba
 | Eigenlöser | PPCG (Projected Preconditioned CG, Vecharynski/Yang/Pask 2015) für H ψ = ε S ψ: bandweise 3×3-Rayleigh-Ritz-Schritte, Cholesky-QR, alle Matrixelemente über PAW-Projektionen ⟨p̃ᵢ\|ψ⟩; alternativ All-Band-LOBPCG. Teter-Payne-Allan-Vorkonditionierung, Toleranz an das Dichteresiduum gekoppelt, LCAO-Startwellenfunktionen |
 | SCF | Pulay/Anderson-Mischung von Dichte, Magnetisierung und PAW-Dichtematrizen, Kerker-Vorkonditionierung, Hartree-Metrik |
 | Kräfte / Relaxation | analytische Hellmann-Feynman-Kräfte (inkl. PAW-Terme), BFGS |
+| Spannungstensor / Zellrelaxation | analytischer PAW-Spannungstensor; geglätteter kinetischer Cutoff (`ecut_smooth`), damit die Spannung die exakte Ableitung der Energie bei konstantem Cutoff ist; Quasi-Newton-Relaxation von Zelle und Atomen auf Zieldruck |
 | Beschleunigung | FFTW (ein Plan, threadsichere Ausführung pro Band), BLAS-3 für alle Blockoperationen, OpenMP |
 
 Energien sind absolute Frozen-Core-Gesamtenergien (inklusive Rumpfbeiträgen der Datensätze),
@@ -44,7 +45,9 @@ Die Zahl der Threads wird über `OMP_NUM_THREADS` gesteuert.
 
 ### Eingabedatei
 
-`schlüssel = wert`, Kommentare mit `#`, drei Blöcke `begin lattice|species|atoms … end`.
+`schlüssel = wert`, Kommentare mit `#`, drei Blöcke `begin lattice|species|atoms … end`
+(optional `begin basis_lattice … end`: Referenzgitter, das die Ebene-Wellen-Basis festlegt – für
+Rechnungen bei fester Basis, z. B. Dehnungstests).
 
 ```
 task       = relax            # scf | forces | relax
@@ -70,7 +73,11 @@ end
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `relax` (BFGS bei fester Zelle) |
+| `task` | `scf` | `scf`, `forces` (SCF + Kräfte), `stress` (+ Spannungstensor), `relax` (Atome bei fester Zelle), `cellrelax` (Zelle + Atome) |
+| `stress` | `false` | Spannungstensor nach dem letzten SCF zusätzlich berechnen |
+| `ecut_smooth` | 0 (bei `cellrelax`: 0.5) | Breite (Ha) der Glättung der kinetischen Energie am Cutoff; nötig für Spannungen/Zellrelaxation. Verschiebt die Energie leicht: in allen zu vergleichenden Rechnungen gleich wählen |
+| `pressure`, `stress_tol` | 0, 0.05 GPa | Zieldruck und Konvergenzschwelle der Zellrelaxation |
+| `cell_steps`, `cell_modulus`, `max_strain` | 30, 300 GPa, 0.03 | Schritte, Start-Steifigkeit und maximale Dehnung pro Schritt |
 | `prefix` | `lsda` | Name der Ergebnisdatei `<prefix>.json` und des Checkpoints `<prefix>.chk` |
 | `restart` | `false` | Positionen, Dichte und PAW-Dichtematrizen aus `<prefix>.chk` übernehmen (falls vorhanden und kompatibel) |
 | `pseudo_dir` | Verzeichnis der Eingabe | Ort der PAW-Datensätze |
@@ -99,7 +106,9 @@ end
 In einer geordneten Verbindung ändert jeder Punktdefekt die Teilchenzahlen; Bildungsenergien sind
 daher nur zusammen mit den chemischen Potentialen definiert. Der Workflow:
 
-1. Gleichgewichtsgitterkonstante aus E(V): `tools/eos.py` (Birch-Murnaghan).
+1. Gleichgewichtsgitterkonstante: `task = cellrelax` an der primitiven Zelle (oder E(V)-Fit mit
+   `tools/eos.py`), mit demselben `ecut`, `ecut_smooth` und vergleichbarer k-Punkt-Dichte wie später
+   in den Superzellen.
 2. Superzellen mit `tools/b2_supercell.py` erzeugen: perfekt, `vac_tm`, `vac_al`, `al_tm`, `tm_al`
    (der Defekt sitzt auf einem Platz voller kubischer Symmetrie → 48 Symmetrieoperationen bleiben
    erhalten), Atompositionen relaxieren (`task = relax`).
@@ -109,7 +118,8 @@ daher nur zusammen mit den chemischen Potentialen definiert. Der Workflow:
    Temperatur, außerdem die zusammensetzungserhaltenden Reaktionen (Tripeldefekt, Schottky-Paar,
    Antistrukturpaar) und die konstitutionellen Defekte.
 
-`examples/defects/run_defects.sh` führt die Schritte 2–3 automatisch aus:
+`examples/defects/run_defects.sh` führt die Schritte 2–3 automatisch aus (Standard: Defektzellen bei
+festem Volumen; `DEFECT_TASK=cellrelax` relaxiert zusätzlich die Zelle auf Druck null):
 
 ```sh
 cd examples/defects
@@ -143,7 +153,7 @@ Siehe `VALIDATION.md` für die Zahlen. Kurzfassung der Prüfungen, die der Code 
 
 * isoliertes Al-Atom in der Box reproduziert die All-Elektronen-Gesamtenergie des Referenzatoms;
 * beide Eigenlöser reproduzieren die dichte Diagonalisierung der vollen PAW-Hamiltonmatrix;
-* analytische Kräfte = finite Differenzen der freien Energie (spinpolarisiert, d-Elektronen);
+* analytische Kräfte und Spannungen = finite Differenzen der freien Energie (spinpolarisiert, d-Elektronen);
 * Rechnung mit und ohne Symmetrie liefert identische Energien;
 * On-site-Hamiltonoperator = numerische Ableitung der On-site-Energie; XC-Potential = Ableitung
   der XC-Energie; Spezialfunktionen, Radialintegrale und FFT-Konventionen gegen analytische Ergebnisse;
@@ -168,13 +178,15 @@ tests         Unit- und Regressionstests
 * **Weitere Funktionale (GGA):** von `XCFunctional` ableiten; für Gradienten sind zusätzlich die
   Gitter-Ableitungen in `Calculation::evaluate` und die radiale GGA-Korrektur in `PawSetup::onsite` nötig.
 * **MPI über k-Punkte:** die Schleife in `Calculation::solve_bands` ist pro k-Punkt unabhängig.
-* **Spannungstensor / Zellrelaxation**, **Spin-Bahn-Kopplung**, **GPU-FFT**: bisher nicht enthalten.
+* **Spin-Bahn-Kopplung**, **GPU-FFT**: bisher nicht enthalten.
 * **Weitere Elemente:** jeder PAW-XML-Datensatz mit einem Radialgitter und `sinc`-, `gauss`- oder
   `exp`-Formfunktion (z. B. die gesamte JTH-Tabelle).
 
 ## Grenzen
 
-* Keine Spannungen: Gitterkonstanten über E(V)-Fits, Defektrechnungen bei festem Volumen.
+* Spannungen sind nur so gut konvergiert wie der Cutoff: Ni/Fe mit Semicore brauchen dafür ≥ 25–30 Ha
+  (bei 20 Ha ist P(V) für NiAl noch auf ~1 GPa rau). Ohne `ecut_smooth` gilt die Spannung für die feste
+  Basis und enthält nicht die Pulay-Spannung.
 * Neustart übernimmt Dichte und Positionen, aber keine Wellenfunktionen (die werden per LCAO neu erzeugt; ~3 SCF-Schritte).
 * Parallelisierung nur über Threads (OpenMP + Thread-BLAS).
 * Die Defekt-Thermodynamik berücksichtigt nur Konfigurationsentropie (keine Bildungsvolumina,

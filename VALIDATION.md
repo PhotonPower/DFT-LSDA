@@ -9,6 +9,7 @@ Einheiten: Hartree (Ha), Bohr, sofern nicht anders angegeben.
 |---|---|
 | sphärische Bessel-Funktionen j_l, l ≤ 6, gegen geschlossene Formeln/Rekursion | 1e-15 |
 | Orthonormalität der reellen Y_lm (l ≤ 6), Gaunt-Koeffizienten, Rotationsmatrizen | 1e-14 |
+| Gradienten der Y_lm und Ableitung der Formfaktor-Tabellen (finite Differenzen) | < 1e-9 |
 | Simpson-Quadratur, radiale Hartree-Potentiale (l = 0, 2) gegen analytische Ergebnisse | 1e-9 |
 | Bessel-Transformation + Tabelleninterpolation (Gauß-Funktionen) | 3e-12 |
 | PW92-Korrelationsenergie (ζ = 0: r_s = 1, 2, 5) | 4e-7 |
@@ -24,7 +25,8 @@ Einheiten: Hartree (Ha), Bohr, sofern nicht anders angegeben.
 Regressionstests (`tests/run_regression.py`, ~30 s): gespeicherte Energien/Kräfte für fcc-Al, B2-NiAl
 (PPCG und LOBPCG) und verzerrtes ferromagnetisches FeAl; Relaxation einer verzerrten NiAl-Zelle findet
 die Idealstruktur (Energie auf 2e-8 Ha, Position auf 5e-5) wieder; Neustart aus dem Checkpoint
-reproduziert die Energie (2e-12 Ha) in 3 statt ~13 SCF-Schritten.
+reproduziert die Energie (2e-12 Ha) in 3 statt ~13 SCF-Schritten; zwei Spannungskomponenten gegen
+finite Differenzen; Zellrelaxation von fcc-Al.
 
 ## 2. Isoliertes Atom gegen die All-Elektronen-Referenz
 
@@ -54,6 +56,39 @@ ohne Symmetrie, 3×3×3 k-Punkte. Zentrale Differenzen der freien Energie mit h 
 | F_z(Al) | +0.00961736 | +0.00961705 | 3.1e-7 |
 
 Summe aller Kräfte: 1e-7 Ha/Bohr.
+
+## 3a. Spannungstensor gegen finite Differenzen
+
+Trikline NiAl-Zelle (Al verschoben), ecut 15 Ha, 2×2×2 k-Punkte, ohne Symmetrie; σ = (1/Ω) ∂F/∂ε.
+
+*Feste Basis* (`basis_lattice`), zentrale Differenzen:
+
+| Komponente | analytisch (Ha/Bohr³) | finite Differenz (h = 1e-3) | Differenz |
+|---|---|---|---|
+| σ_xx | 1.233583154e-02 | 1.233589895e-02 | 6.7e-8 (2.5e-8 bei h = 5e-4: Differenzenfehler) |
+| σ_yy | 1.217169559e-02 | 1.217176649e-02 | 7.1e-8 |
+| σ_zz | 1.301421636e-02 | 1.301427185e-02 | 5.6e-8 |
+| σ_yz | 1.919538197e-04 | 1.919538864e-04 | 6.7e-11 |
+| σ_xz | 5.601088496e-05 | 5.601096118e-05 | 7.6e-11 |
+| σ_xy | 2.173427148e-05 | 2.173420079e-05 | 7.1e-11 |
+
+Spinpolarisiertes FeAl (M = 1.35 µB): σ_xx 1.6e-8, σ_yz 1.7e-10 Abweichung. Mit/ohne Symmetrie
+(NiAl kubisch): 17.30422 / 17.30437 GPa.
+
+*Konstanter Cutoff* (Basis ändert sich mit der Zelle). Ohne Glättung weicht die Spannung der festen
+Basis um die Pulay-Spannung von der Ableitung der Energie ab; mit `ecut_smooth` stimmt sie:
+
+| System | `ecut_smooth` (Ha) | \|σ_xx(analytisch) − finite Differenz\| (Ha/Bohr³) |
+|---|---|---|
+| NiAl, 15 Ha (stark unterkonvergiert) | 0 | 1.6e-2 |
+| NiAl, 15 Ha | 0.5 | 2.1e-5 (h = 1e-3) |
+| NiAl, 15 Ha | 1.0 | 4.1e-6 (h = 1e-3); skaliert mit h², Grenzwert ≈ 1.4e-6 |
+| Al, 15 Ha | 0.5 | 5.7e-8 |
+
+*Zellrelaxation* (`task = cellrelax`, `ecut_smooth = 0.5`): fcc-Al von a = 4.08 Å → 3.990 Å in 3 Schritten
+(6×6×6 k); NiAl von einer tetragonal verzerrten Zelle (2.90 × 2.929 × 2.90 Å) → kubisch, a = 2.840 Å
+in 7 Schritten (4×4×4 k, 20 Ha). Bei 20 Ha ist P(V) für NiAl noch auf etwa 1 GPa rau (Ni-Semicore);
+für Spannungen an Ni/Fe-Systemen daher ≥ 25–30 Ha.
 
 ## 4. Symmetrie und Löser
 

@@ -22,10 +22,15 @@ struct Crystal {
   Mat3 A{};  // rows: lattice vectors a_i (bohr)
   Mat3 B{};  // rows: reciprocal vectors b_i with a_i . b_j = 2 pi delta_ij
   double volume = 0;
+  // Lattice that defines which plane waves belong to the basis (|k+G|^2/2 <= ecut is evaluated with it).
+  // Normally identical to A/B; a different reference lattice keeps the basis set fixed when the cell is
+  // strained (constant-basis energies, e.g. for finite-difference tests of the stress tensor).
+  Mat3 A_cut{}, B_cut{};
   std::vector<Species> species;
   std::vector<Atom> atoms;
 
-  void set_lattice(const Mat3& a);
+  void set_lattice(const Mat3& a);              // also resets the basis reference lattice
+  void set_basis_lattice(const Mat3& a);
   Vec3 cart(const Vec3& frac) const;          // r = sum_i f_i a_i
   Vec3 frac_from_cart(const Vec3& r) const;
   Vec3 atom_cart(int ia) const { return cart(atoms[ia].frac); }

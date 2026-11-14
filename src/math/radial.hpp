@@ -29,6 +29,7 @@ struct RadialTable {
   double dq = 0.0;
   std::vector<double> f;
   double operator()(double q) const;
+  double deriv(double q) const;  // derivative of the interpolating polynomial
   double qmax() const { return dq * (static_cast<int>(f.size()) - 4); }
 };
 

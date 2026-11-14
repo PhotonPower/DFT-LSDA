@@ -11,6 +11,15 @@ void Crystal::set_lattice(const Mat3& a) {
   const Mat3 inv = inverse3(A);  // A * inv = 1  ->  columns of inv are b_j / 2 pi
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) B[i][j] = 2 * pi * inv[j][i];
+  A_cut = A;
+  B_cut = B;
+}
+
+void Crystal::set_basis_lattice(const Mat3& a) {
+  Crystal ref;
+  ref.set_lattice(a);
+  A_cut = ref.A;
+  B_cut = ref.B;
 }
 
 Vec3 Crystal::cart(const Vec3& f) const {

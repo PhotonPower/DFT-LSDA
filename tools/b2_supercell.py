@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--a", type=float, required=True, help="B2 lattice constant (Angstrom)")
     ap.add_argument("--n", type=int, default=2, help="supercell n x n x n (2 n^3 sites)")
     ap.add_argument("--defect", default="none", choices=["none", "vac_tm", "vac_al", "al_tm", "tm_al"])
-    ap.add_argument("--task", default="scf", choices=["scf", "forces", "relax"])
+    ap.add_argument("--task", default="scf", choices=["scf", "forces", "stress", "relax", "cellrelax"])
     ap.add_argument("--ecut", type=float, default=20.0)
     ap.add_argument("--kpoints", type=int, nargs=3, default=[4, 4, 4])
     ap.add_argument("--kshift", type=float, nargs=3, default=[0, 0, 0])

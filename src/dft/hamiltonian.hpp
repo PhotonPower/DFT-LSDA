@@ -17,6 +17,9 @@ struct Projectors {
   int nproj = 0;
 };
 Projectors make_projectors(const Crystal& c, const PWBasis& pw);
+// Strain derivative of the projector form factors (symmetrized in a, b; the volume factor
+// -1/2 delta_ab beta is not included):  dbeta = -1/2 (q_b d/dq_a + q_a d/dq_b) beta|_{fixed phase}
+CMatrix make_projector_strain_derivative(const Crystal& c, const PWBasis& pw, int a, int b);
 
 class Hamiltonian {
  public:

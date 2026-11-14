@@ -14,6 +14,8 @@ double sph_bessel(int l, double x);
 // m > 0: ~cos(m phi), m < 0: ~sin(|m| phi), no Condon-Shortley phase. For v = 0 only Y_00 is nonzero.
 void real_ylm(int lmax, const double* v, double* ylm);
 inline int lm_index(int l, int m) { return l * l + l + m; }
+// Same, together with the gradient d Y_lm(v/|v|) / d v_alpha (grad[3*lm + alpha]). For v = 0 the gradient is zero.
+void real_ylm_grad(int lmax, const double* v, double* ylm, double* grad);
 
 // Product quadrature on the unit sphere (Gauss-Legendre in cos(theta), uniform in phi),
 // exact for spherical harmonics up to degree 2*ntheta-1. Weights sum to 4 pi.

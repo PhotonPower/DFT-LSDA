@@ -45,6 +45,54 @@ Projectors make_projectors(const Crystal& c, const PWBasis& pw) {
   return p;
 }
 
+CMatrix make_projector_strain_derivative(const Crystal& c, const PWBasis& pw, int a, int b) {
+  const int nat = c.natoms(), npw = pw.npw;
+  int nproj = 0;
+  std::vector<int> offset(nat);
+  for (int at = 0; at < nat; ++at) {
+    offset[at] = nproj;
+    nproj += c.setup(at).ni;
+  }
+  CMatrix d(npw, nproj);
+  const double pref = 4 * pi / std::sqrt(c.volume);
+  const cplx il[4] = {cplx(1, 0), cplx(0, -1), cplx(-1, 0), cplx(0, 1)};
+  for (size_t is = 0; is < c.species.size(); ++is) {
+    const PawSetup& s = c.species[is].setup;
+    CMatrix form(npw, s.ni);
+#pragma omp parallel for schedule(static)
+    for (int ig = 0; ig < npw; ++ig) {
+      const double* q = &pw.kg[3 * ig];
+      const double qn = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+      double ylm[49], grad[147], rad[16], drad[16];
+      real_ylm_grad(s.lmax, q, ylm, grad);
+      for (int j = 0; j < s.nj; ++j) {
+        rad[j] = s.proj_q[j](qn);
+        drad[j] = s.proj_q[j].deriv(qn);
+      }
+      for (int i = 0; i < s.ni; ++i) {
+        const int L = s.L_i[i], j = s.j_i[i];
+        // d/dq_a [Y(q^) p(q)] = p'(q) q_a/q Y + p(q) dY/dq_a ; the q -> 0 limit of q_b d/dq_a(...) vanishes
+        double val = 0.0;
+        if (qn > 1e-12)
+          val = -(drad[j] * q[a] * q[b] / qn * ylm[L] + 0.5 * rad[j] * (q[b] * grad[3 * L + a] + q[a] * grad[3 * L + b]));
+        form(ig, i) = pref * il[s.l_i[i] % 4] * val;
+      }
+    }
+    for (int at = 0; at < nat; ++at) {
+      if (c.atoms[at].species != static_cast<int>(is)) continue;
+      const Vec3 r = c.atom_cart(at);
+#pragma omp parallel for schedule(static)
+      for (int ig = 0; ig < npw; ++ig) {
+        const double* q = &pw.kg[3 * ig];
+        const double arg = -(q[0] * r[0] + q[1] * r[1] + q[2] * r[2]);
+        const cplx phase(std::cos(arg), std::sin(arg));
+        for (int i = 0; i < s.ni; ++i) d(ig, offset[at] + i) = form(ig, i) * phase;
+      }
+    }
+  }
+  return d;
+}
+
 void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
   const int npw = pw_.npw;
   const size_t ngrid = fft_.size();

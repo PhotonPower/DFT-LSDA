@@ -19,6 +19,7 @@ struct Params {
   double ecut = 0.0;          // plane-wave cutoff for wavefunctions (Ha); 0: largest recommendation of the datasets
   double ecut_dense = 0.0;    // cutoff of the dense G-sphere for densities (Ha); 0: dense_factor * ecut
   double dense_factor = 8.0;  // >= 4
+  double ecut_smooth = 0.0;   // width (Ha) of the smoothed kinetic-energy cutoff; needed for stresses at constant ecut
   // Brillouin zone
   int kgrid[3] = {1, 1, 1};
   Vec3 kshift{0, 0, 0};
@@ -66,7 +67,15 @@ class Calculation {
 
   bool scf();                           // returns true if converged
   std::vector<Vec3> forces();           // Cartesian forces (Ha/bohr), symmetrized
+  // Stress tensor sigma_ab = (1/Omega) dF/d eps_ab (Ha/bohr^3) at fixed plane-wave basis set;
+  // the pressure is -trace/3. Requires a converged scf().
+  Mat3 stress();
   void move_atoms(const std::vector<Vec3>& frac);
+
+  // Take over wavefunctions, density and density matrices of a calculation with the same basis-set
+  // layout (same reference lattice, k-points and bands), e.g. after a small change of the cell.
+  // Returns false (and leaves this object untouched) if the layouts differ.
+  bool adopt_state(Calculation&& other);
 
   // Checkpoint (atomic positions, pseudo density, PAW density matrices) for restarting SCF runs and
   // relaxations. load_checkpoint returns false if the file is missing or incompatible.
@@ -144,6 +153,9 @@ class Calculation {
   std::vector<cplx> vH_G_;
   DMat dH_;
   std::vector<RMatrix> dS_;                   // per atom (copy of the species matrices)
+
+  Functional f_pot_;        // energy terms of the density that generated the current potential
+  double vxc_n_ = 0;        // int v_xc n~ d^3r for that density (including the pseudo core)
 
   Mixer mixer_;
   Energies en_;

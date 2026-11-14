@@ -1,5 +1,6 @@
 #include "math/special.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace lsda {
@@ -42,33 +43,66 @@ double sph_bessel(int l, double x) {
   return jl[l];
 }
 
-void real_ylm(int lmax, const double* v, double* ylm) {
-  const int n = (lmax + 1) * (lmax + 1);
-  const double r = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-  ylm[0] = 0.5 / std::sqrt(pi);
-  if (lmax == 0) return;
-  if (r < 1e-14) {
-    for (int i = 1; i < n; ++i) ylm[i] = 0.0;
-    return;
-  }
-  const double x = v[0] / r, y = v[1] / r, z = v[2] / r;
+namespace {
+
+// first-order dual number in three variables (forward-mode differentiation)
+struct Dual3 {
+  double v = 0.0;
+  double d[3] = {0.0, 0.0, 0.0};
+  Dual3() = default;
+  Dual3(double x) : v(x) {}
+};
+inline Dual3 operator+(const Dual3& a, const Dual3& b) {
+  Dual3 r(a.v + b.v);
+  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] + b.d[i];
+  return r;
+}
+inline Dual3 operator-(const Dual3& a, const Dual3& b) {
+  Dual3 r(a.v - b.v);
+  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] - b.d[i];
+  return r;
+}
+inline Dual3 operator*(const Dual3& a, const Dual3& b) {
+  Dual3 r(a.v * b.v);
+  for (int i = 0; i < 3; ++i) r.d[i] = a.d[i] * b.v + a.v * b.d[i];
+  return r;
+}
+inline Dual3 operator/(const Dual3& a, const Dual3& b) {
+  Dual3 r(a.v / b.v);
+  for (int i = 0; i < 3; ++i) r.d[i] = (a.d[i] - r.v * b.d[i]) / b.v;
+  return r;
+}
+inline Dual3 sqrt(const Dual3& a) {
+  Dual3 r(std::sqrt(a.v));
+  for (int i = 0; i < 3; ++i) r.d[i] = 0.5 * a.d[i] / r.v;
+  return r;
+}
+inline double value(double x) { return x; }
+inline double value(const Dual3& x) { return x.v; }
+
+// Y_lm(v/|v|) for a scalar type T (double or Dual3); vx, vy, vz are the components of v != 0
+template <class T>
+void real_ylm_impl(int lmax, const T& vx, const T& vy, const T& vz, T* ylm) {
+  using std::sqrt;
+  const T r = sqrt(vx * vx + vy * vy + vz * vz);
+  const T x = vx / r, y = vy / r, z = vz / r;
   // (x + i y)^m = cm + i sm  (= sin^m(theta) e^{i m phi})
-  double cm = 1.0, sm = 0.0;
+  T cm(1.0), sm(0.0);
   double pmm = 1.0;  // P_m^m / sin^m(theta) = (2m-1)!!
   for (int m = 0; m <= lmax; ++m) {
     if (m > 0) {
-      const double c2 = cm * x - sm * y;
+      const T c2 = cm * x - sm * y;
       sm = cm * y + sm * x;
       cm = c2;
       pmm *= (2 * m - 1);
     }
-    double p0 = pmm, p1 = 0.0;  // P_l^m and P_{l-1}^m (divided by sin^m)
+    T p0(pmm), p1(0.0);  // P_l^m and P_{l-1}^m (divided by sin^m)
     for (int l = m; l <= lmax; ++l) {
       if (l == m + 1) {
         p1 = p0;
-        p0 = z * (2 * m + 1) * pmm;
+        p0 = z * T((2 * m + 1) * pmm);
       } else if (l > m + 1) {
-        const double pn = ((2 * l - 1) * z * p0 - (l + m - 1) * p1) / (l - m);
+        const T pn = (T(2.0 * l - 1.0) * z * p0 - T(l + m - 1.0) * p1) / T(static_cast<double>(l - m));
         p1 = p0;
         p0 = pn;
       }
@@ -77,12 +111,43 @@ void real_ylm(int lmax, const double* v, double* ylm) {
       for (int k = l - m + 1; k <= l + m; ++k) ratio /= k;
       const double nrm = std::sqrt((2 * l + 1) / (4 * pi) * ratio);
       if (m == 0) {
-        ylm[lm_index(l, 0)] = nrm * p0;
+        ylm[lm_index(l, 0)] = T(nrm) * p0;
       } else {
-        ylm[lm_index(l, m)] = std::sqrt(2.0) * nrm * p0 * cm;
-        ylm[lm_index(l, -m)] = std::sqrt(2.0) * nrm * p0 * sm;
+        ylm[lm_index(l, m)] = T(std::sqrt(2.0) * nrm) * p0 * cm;
+        ylm[lm_index(l, -m)] = T(std::sqrt(2.0) * nrm) * p0 * sm;
       }
     }
+  }
+}
+
+}  // namespace
+
+void real_ylm(int lmax, const double* v, double* ylm) {
+  const int n = (lmax + 1) * (lmax + 1);
+  ylm[0] = 0.5 / std::sqrt(pi);
+  if (lmax == 0) return;
+  if (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 1e-28) {
+    for (int i = 1; i < n; ++i) ylm[i] = 0.0;
+    return;
+  }
+  real_ylm_impl<double>(lmax, v[0], v[1], v[2], ylm);
+}
+
+void real_ylm_grad(int lmax, const double* v, double* ylm, double* grad) {
+  const int n = (lmax + 1) * (lmax + 1);
+  if (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 1e-28) {
+    real_ylm(lmax, v, ylm);
+    std::fill(grad, grad + 3 * n, 0.0);
+    return;
+  }
+  Dual3 x(v[0]), y(v[1]), z(v[2]);
+  x.d[0] = y.d[1] = z.d[2] = 1.0;
+  Dual3 out[49];
+  LSDA_CHECK(n <= 49, "real_ylm_grad: lmax too large");
+  real_ylm_impl<Dual3>(lmax, x, y, z, out);
+  for (int i = 0; i < n; ++i) {
+    ylm[i] = out[i].v;
+    for (int a = 0; a < 3; ++a) grad[3 * i + a] = out[i].d[a];
   }
 }
 

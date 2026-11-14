@@ -99,6 +99,31 @@ double RadialTable::operator()(double q) const {
          p[4] * t0 * t1 * t2 * t3 * t5 / 24.0 + p[5] * t0 * t1 * t2 * t3 * t4 / 120.0;
 }
 
+double RadialTable::deriv(double q) const {
+  const double x = q / dq;
+  const int n = static_cast<int>(f.size());
+  LSDA_CHECK(x <= n - 3, "RadialTable: argument beyond tabulated range");
+  int i0 = static_cast<int>(x) - 2;
+  if (i0 < 0) i0 = 0;
+  if (i0 > n - 6) i0 = n - 6;
+  const double t = x - i0;
+  double sum = 0.0;
+  for (int k = 0; k < 6; ++k) {
+    double den = 1.0, dl = 0.0;
+    for (int j = 0; j < 6; ++j)
+      if (j != k) den *= (k - j);
+    for (int j = 0; j < 6; ++j) {  // derivative of prod_{i != k} (t - i)
+      if (j == k) continue;
+      double prod = 1.0;
+      for (int i = 0; i < 6; ++i)
+        if (i != k && i != j) prod *= (t - i);
+      dl += prod;
+    }
+    sum += f[i0 + k] * dl / den;
+  }
+  return sum / dq;
+}
+
 RadialTable bessel_transform(const RadialGrid& grid, const std::vector<double>& f, int npts, int l, double qmax,
                              double dq, int refine) {
   LSDA_CHECK(npts >= 6 && npts <= grid.size(), "bessel_transform: bad number of points");

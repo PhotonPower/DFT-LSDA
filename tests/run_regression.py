@@ -164,6 +164,98 @@ def relax_and_restart(lsda, pseudo, tmp):
     return failures
 
 
+def stress_tests(lsda, pseudo, tmp):
+    """Stress tensor = strain derivative of the free energy (finite differences at fixed basis set);
+    variable-cell relaxation reaches zero pressure and lowers the energy."""
+    a0 = 5.35
+    ref = [[a0, 0, 0], [0.15, 1.02 * a0, 0], [0, -0.1, 0.97 * a0]]
+
+    def run(name, eps):
+        lat = [[sum(ref[i][k] * ((j == k) + eps[j][k]) for k in range(3)) for j in range(3)] for i in range(3)]
+        fmt = lambda m: "\n".join(" ".join(f"{x:.14f}" for x in row) for row in m)
+        text = f"""prefix = {name}
+pseudo_dir = {pseudo}
+task = stress
+ecut = 15
+kpoints = 2 2 2
+symmetry = false
+smearing = cold
+width = 0.02
+scf_tol = 1e-12
+eig_tol = 1e-9
+begin lattice
+{fmt(lat)}
+end
+begin basis_lattice
+{fmt(ref)}
+end
+begin species
+ Ni Ni.LDA_PW-JTH.xml
+ Al Al.LDA_PW-JTH.xml
+end
+begin atoms
+ Ni 0 0 0
+ Al 0.54 0.47 0.52
+end
+"""
+        with open(os.path.join(tmp, name + ".in"), "w") as f:
+            f.write(text)
+        out = subprocess.run([lsda, name + ".in"], cwd=tmp, capture_output=True, text=True)
+        if out.returncode != 0:
+            raise RuntimeError(out.stdout[-1500:] + out.stderr)
+        return json.load(open(os.path.join(tmp, name + ".json")))
+
+    failures = 0
+    try:
+        zero = [[0.0] * 3 for _ in range(3)]
+        r0 = run("s0", zero)
+        h = 5e-4
+        for (i, j) in ((0, 0), (1, 2)):
+            ep, em = [row[:] for row in zero], [row[:] for row in zero]
+            ep[i][j] += h; em[i][j] -= h
+            if i != j:
+                ep[j][i] += h; em[j][i] -= h
+            fd = (run("sp", ep)["free_energy"] - run("sm", em)["free_energy"]) / (2 * h) / r0["volume"] / (1 if i == j else 2)
+            err = abs(fd - r0["stress"][i][j])
+            ok = err < 1e-7
+            failures += not ok
+            print(f"[{' ok ' if ok else 'FAIL'}] stress[{i}][{j}] = dF/d(strain)/V (finite differences)   {err:.2e} (tolerance 1e-07)")
+        # cell relaxation of fcc Al from a too large lattice constant
+        text = f"""prefix = alcell
+pseudo_dir = {pseudo}
+task = cellrelax
+ecut = 15
+kpoints = 4 4 4
+smearing = cold
+width = 0.02
+units = angstrom
+scale = 4.08
+begin lattice
+ 0 .5 .5
+ .5 0 .5
+ .5 .5 0
+end
+begin species
+ Al Al.LDA_PW-JTH.xml
+end
+begin atoms
+ Al 0 0 0
+end
+"""
+        with open(os.path.join(tmp, "alcell.in"), "w") as f:
+            f.write(text)
+        out = subprocess.run([lsda, "alcell.in"], cwd=tmp, capture_output=True, text=True)
+        r = json.load(open(os.path.join(tmp, "alcell.json")))
+        a = (4 * r["volume"]) ** (1 / 3) * BOHR
+        ok = out.returncode == 0 and r["converged"] and abs(r["pressure_GPa"]) < 0.05 and 3.9 < a < 4.05
+        failures += not ok
+        print(f"[{' ok ' if ok else 'FAIL'}] cell relaxation of fcc Al: a = {a:.4f} A, p = {r['pressure_GPa']:.4f} GPa")
+    except Exception as e:  # noqa: BLE001
+        print(f"[FAIL] stress tests: {e}")
+        failures += 1
+    return failures
+
+
 def main():
     lsda, pseudo = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     show = "--print" in sys.argv
@@ -202,6 +294,7 @@ def main():
                 print(f"[{' ok ' if ok else 'FAIL'}] {name:12s} {key:14s} deviation {err:.2e} (tolerance {tol:.0e})")
         if not show:
             failures += relax_and_restart(lsda, pseudo, tmp)
+            failures += stress_tests(lsda, pseudo, tmp)
     if not show:
         print("ALL REGRESSION TESTS PASSED" if failures == 0 else f"{failures} REGRESSION TEST(S) FAILED")
     return 1 if failures else 0

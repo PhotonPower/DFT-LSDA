@@ -64,7 +64,7 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   fft_c_ = FFT3D(nc[0], nc[1], nc[2]);
   fft_f_ = FFT3D(nf[0], nf[1], nf[2]);
   gs_ = make_gsphere(c_, p_.ecut_dense, fft_f_, fft_c_);
-  for (const KPoint& k : kpts_) basis_.push_back(make_pw_basis(c_, k, p_.ecut, fft_c_));
+  for (const KPoint& k : kpts_) basis_.push_back(make_pw_basis(c_, k, p_.ecut, fft_c_, p_.ecut_smooth));
 
   // ---- bands ---------------------------------------------------------------------------
   nbands_ = p_.nbands;
@@ -83,7 +83,15 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   LSDA_CHECK((nspin_ == 1 ? 2.0 : 1.0) * nbands_ * (nspin_ == 1 ? 1 : 2) >= nelec_, "nbands too small");
 
   // ---- reciprocal-space tables of the PAW datasets ------------------------------------
-  const double qmax_wfc = std::sqrt(2.0 * p_.ecut) + 0.05, qmax_dense = std::sqrt(2.0 * p_.ecut_dense) + 0.05;
+  // table ranges from the actual vector lengths (they differ from the cutoffs if a reference lattice is used)
+  double qmax_wfc = 0.0, qmax_dense = 0.0;
+  for (const PWBasis& b : basis_)
+    for (int ig = 0; ig < b.npw; ++ig)
+      qmax_wfc = std::max(qmax_wfc, std::sqrt(b.kg[3 * ig] * b.kg[3 * ig] + b.kg[3 * ig + 1] * b.kg[3 * ig + 1] +
+                                              b.kg[3 * ig + 2] * b.kg[3 * ig + 2]));
+  for (double g2 : gs_.g2) qmax_dense = std::max(qmax_dense, std::sqrt(g2));
+  qmax_wfc += 0.05;
+  qmax_dense += 0.05;
   const int ng = gs_.ng;
   ff_g_.resize(c_.species.size());
   ff_nct_.resize(c_.species.size());
@@ -121,6 +129,7 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
     logf("  Exchange-correlation   : %s\n", xc_->name().c_str());
     logf("  Spin channels / bands  : %d / %d\n", nspin_, nbands_);
     logf("  Cutoff wavefunctions   : %.2f Ha   (%d - %d plane waves)\n", p_.ecut, npw_min, npw_max);
+    if (p_.ecut_smooth > 0.0) logf("  Cutoff smoothing       : %.2f Ha\n", p_.ecut_smooth);
     logf("  Cutoff dense sphere    : %.2f Ha   (%d G-vectors)\n", p_.ecut_dense, ng);
     logf("  FFT grid coarse / fine : %d x %d x %d  /  %d x %d x %d\n", nc[0], nc[1], nc[2], nf[0], nf[1], nf[2]);
     logf("  Symmetry operations    : %zu\n", ops_.size());
@@ -479,6 +488,14 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
 #pragma omp parallel for schedule(static) reduction(+ : exc_sum)
   for (size_t i = 0; i < nfine; ++i) exc_sum += exc[i];
   e.xc = exc_sum * vol / static_cast<double>(nfine);
+  if (build) {
+    double vn = 0.0;
+    const std::vector<double>& nd = nspin_ == 2 ? ndn : nup;
+    const std::vector<double>& vd = nspin_ == 2 ? vdn : vup;
+#pragma omp parallel for schedule(static) reduction(+ : vn)
+    for (size_t i = 0; i < nfine; ++i) vn += vup[i] * nup[i] + vd[i] * nd[i];
+    vxc_n_ = vn * vol / static_cast<double>(nfine);
+  }
 
   // ---- potentials ---------------------------------------------------------------------------
   std::vector<std::vector<double>> W;
@@ -525,6 +542,7 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
         }
   }
   e.onsite = eon;
+  if (build) f_pot_ = e;
   return e;
 }
 
@@ -685,6 +703,7 @@ void Calculation::symmetrize_density(RhoG& rho) const {
         int m[3];
         for (int i = 0; i < 3; ++i) m[i] = op.Wk[i][0] * mp[0] + op.Wk[i][1] * mp[1] + op.Wk[i][2] * mp[2];
         const int j = gs_.lookup[fft_f_.index(m[0], m[1], m[2])];
+        if (j < 0) continue;  // only possible if the basis reference lattice breaks the symmetry (checked below)
         const double arg = 2 * pi * (m[0] * op.t[0] + m[1] * op.t[1] + m[2] * op.t[2]);
         sum += r[j] * cplx(std::cos(arg), std::sin(arg));
       }
@@ -947,6 +966,63 @@ std::vector<double> Calculation::local_charges() const {
       for (int ij = 0; ij < s.ni * s.ni; ++ij) q[a] += D_[a][sp].data()[ij] * s.dN.data()[ij];
   }
   return q;
+}
+
+bool Calculation::adopt_state(Calculation&& o) {
+  if (o.nspin_ != nspin_ || o.nbands_ != nbands_ || o.basis_.size() != basis_.size() || o.c_.natoms() != c_.natoms() ||
+      !o.have_density_ || o.psi_.size() != psi_.size())
+    return false;
+  for (int a = 0; a < c_.natoms(); ++a)
+    if (o.c_.setup(a).ni != c_.setup(a).ni) return false;
+  for (size_t ik = 0; ik < basis_.size(); ++ik)
+    for (int d = 0; d < 3; ++d)
+      if (std::abs(o.basis_[ik].kfrac[d] - basis_[ik].kfrac[d]) > 1e-10) return false;
+
+  // wavefunctions: copy the coefficients of common plane waves (identified by their integer G vectors)
+  for (size_t ik = 0; ik < basis_.size(); ++ik) {
+    const PWBasis &bn = basis_[ik], &bo = o.basis_[ik];
+    std::vector<int> map(bn.npw, -1);
+    if (bn.mill == bo.mill) {
+      for (int ig = 0; ig < bn.npw; ++ig) map[ig] = ig;
+    } else {
+      std::vector<int> where(o.fft_c_.size(), -1);
+      for (int ig = 0; ig < bo.npw; ++ig) where[bo.idx[ig]] = ig;
+      for (int ig = 0; ig < bn.npw; ++ig) {
+        const int* m = &bn.mill[3 * ig];
+        if (2 * std::abs(m[0]) < o.fft_c_.n(0) && 2 * std::abs(m[1]) < o.fft_c_.n(1) && 2 * std::abs(m[2]) < o.fft_c_.n(2))
+          map[ig] = where[o.fft_c_.index(m[0], m[1], m[2])];
+      }
+    }
+    for (int s = 0; s < nspin_; ++s) {
+      const size_t ks = ik * nspin_ + s;
+      const CMatrix& xo = o.psi_[ks];
+      CMatrix xn(bn.npw, nbands_);
+      for (int n = 0; n < nbands_; ++n)
+        for (int ig = 0; ig < bn.npw; ++ig)
+          if (map[ig] >= 0) xn(ig, n) = xo(map[ig], n);
+      psi_[ks] = std::move(xn);
+    }
+  }
+  // density: Omega * n(G), the number of electrons per plane-wave component, is carried over
+  const double scale = o.c_.volume / c_.volume;
+  for (int s = 0; s < nspin_; ++s) {
+    std::vector<cplx> r(gs_.ng, 0.0);
+    for (int ig = 0; ig < gs_.ng; ++ig) {
+      const int* m = &gs_.m[3 * ig];
+      if (2 * std::abs(m[0]) >= o.fft_f_.n(0) || 2 * std::abs(m[1]) >= o.fft_f_.n(1) || 2 * std::abs(m[2]) >= o.fft_f_.n(2)) continue;
+      const int j = o.gs_.lookup[o.fft_f_.index(m[0], m[1], m[2])];
+      if (j >= 0) r[ig] = o.rho_[s][j] * scale;
+    }
+    rho_[s] = std::move(r);
+  }
+  D_ = std::move(o.D_);
+  eig_ = std::move(o.eig_);
+  occ_ = std::move(o.occ_);
+  have_occ_ = o.have_occ_;
+  have_density_ = true;
+  first_solve_ = o.first_solve_;
+  mixer_.reset();
+  return true;
 }
 
 // =====================================================================================

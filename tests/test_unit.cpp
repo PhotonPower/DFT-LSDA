@@ -90,6 +90,21 @@ static void test_special() {
     err = std::max(err, std::abs(s - yr[m]));
   }
   check(err < 1e-12, "rotation of real Y_lm", err);
+
+  // gradient of Y_lm(v/|v|) with respect to v against central differences
+  err = 0.0;
+  const Vec3 w{0.7, -1.3, 0.45};
+  double yv[49], gv[147], yp[49], ym[49];
+  real_ylm_grad(6, w.data(), yv, gv);
+  for (int al = 0; al < 3; ++al) {
+    Vec3 wp = w, wm = w;
+    wp[al] += 1e-5;
+    wm[al] -= 1e-5;
+    real_ylm(6, wp.data(), yp);
+    real_ylm(6, wm.data(), ym);
+    for (int i = 0; i < 49; ++i) err = std::max(err, std::abs((yp[i] - ym[i]) / 2e-5 - gv[3 * i + al]));
+  }
+  check(err < 1e-9, "gradient of real Y_lm, l <= 6", err);
 }
 
 static void test_radial() {
@@ -139,6 +154,10 @@ static void test_radial() {
     err = std::max(err, std::abs(t2(q) - std::sqrt(pi) / 16 * q * q * std::exp(-q * q / 4)));
   }
   check(err < 1e-10, "spherical Bessel transform + table interpolation", err);
+  err = 0.0;
+  for (double q = 0.05; q < 12.0; q += 0.0937)
+    err = std::max(err, std::abs(t0.deriv(q) + std::sqrt(pi) / 8 * q * std::exp(-q * q / 4)));
+  check(err < 1e-9, "derivative of the interpolated table", err);
 }
 
 static void test_xc() {

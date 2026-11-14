@@ -1,6 +1,7 @@
 // Structure optimization at fixed cell: BFGS on the Cartesian atomic coordinates.
 #pragma once
 #include <functional>
+#include <memory>
 
 #include "dft/calculation.hpp"
 
@@ -23,5 +24,27 @@ struct RelaxResult {
 };
 
 RelaxResult relax(Calculation& calc, const RelaxParams& rp);
+
+// Variable-cell optimization: lattice vectors and atomic positions are relaxed until the stress equals
+// -pressure * 1 within stress_tol. The plane-wave basis is rebuilt for every cell at constant cutoff;
+// with a smoothed cutoff (ecut_smooth) the energy is a differentiable function of the cell and the stress
+// its exact derivative. Wavefunctions and density are carried over between the cells.
+struct CellRelaxParams {
+  int max_steps = 30;
+  double stress_tol = 0.05 / 29421.02648438959;  // Ha/bohr^3 (0.05 GPa)
+  double pressure = 0.0;                          // target pressure (Ha/bohr^3)
+  double modulus = 300.0 / 29421.02648438959;     // elastic modulus for the initial Hessian (Ha/bohr^3)
+  double max_strain = 0.03;                       // largest strain component per step
+  std::function<void(const Calculation&, const std::vector<Vec3>& forces, const Mat3& stress)> on_step;
+};
+
+struct CellRelaxResult {
+  bool converged = false;
+  int steps = 0;
+  Mat3 stress{};
+  std::vector<Vec3> forces;
+};
+
+CellRelaxResult relax_cell(std::unique_ptr<Calculation>& calc, const RelaxParams& rp, const CellRelaxParams& cp);
 
 }  // namespace lsda
