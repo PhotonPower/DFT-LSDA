@@ -29,7 +29,7 @@ class PawSetup {
   RadialGrid grid;
   int ncut = 0;            // number of radial points used for integrals over the augmentation sphere
   int nj = 0;              // radial partial waves
-  std::vector<int> l_j;
+  std::vector<int> l_j, n_j;  // n_j: principal quantum number of bound valence states, -1 if not given
   std::vector<double> f_j, e_j;
   std::vector<std::vector<double>> phi, phit, proj;
   std::vector<double> nc, nct, nvt, vbar;
@@ -89,12 +89,23 @@ class PawSetup {
   // diagnostics (filled by load)
   double check_core_charge = 0, check_duality = 0;
 
+  // ---- meta-GGA (core_states.cpp) -----------------------------------------------------
+  // Core and pseudo core kinetic energy densities (stored like the densities, f(r) Y_00) and the radial
+  // functions of the valence kinetic energy density; prepare_mgga() must be called before onsite() is used with
+  // a meta-GGA functional and before build_tables().
+  void prepare_mgga();
+  bool has_core_tau = false;
+  std::vector<double> tauc, tauct;
+  double check_core_density = 0, check_core_kinetic = 0;  // recomputed core states against the dataset
+  RadialTable tauct_q;
+
  private:
   int nq_ = 0;  // radial pairs
   int pair(int j1, int j2) const { return j1 <= j2 ? j1 * nj - j1 * (j1 - 1) / 2 + (j2 - j1) : pair(j2, j1); }
   std::vector<std::vector<double>> nq_ae_, nq_ps_;  // pair densities phi_j1 phi_j2 on r < r(ncut)
   std::vector<std::vector<double>> dnq_ae_, dnq_ps_;  // their radial derivatives (gradient-corrected functionals)
   std::vector<double> dnc_, dnct_;                  // radial derivatives of the core densities
+  std::vector<std::vector<std::vector<double>>> tq_ae_, tq_ps_;  // [l][pair]: radial kinetic-energy pair functions
   std::vector<double> ylm_grad_quad_;               // tangential gradients of Y_L at the quadrature points (3 nL per point)
   double onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::vector<RMatrix>* vlq, const XCFunctional& xc) const;
   std::vector<double> wr2_;                         // radial weights * r^2

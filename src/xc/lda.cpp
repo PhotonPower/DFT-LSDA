@@ -76,6 +76,16 @@ void XCFunctional::evaluate_gga(size_t, const double*, const double*, const doub
   fail("evaluate_gga called for the local functional '" + name() + "'");
 }
 
+void XCFunctional::evaluate_mgga(size_t, const double*, const double*, const double*, const double*, const double*,
+                                 const double*, const double*, double*, double*, double*, double*, double*, double*,
+                                 double*, double*) const {
+  fail("evaluate_mgga called for the functional '" + name() + "'");
+}
+
+void MGGA_R2SCAN::evaluate(size_t, const double*, const double*, double*, double*, double*) const {
+  fail("the meta-GGA needs gradients and kinetic energy densities (evaluate_mgga)");
+}
+
 std::unique_ptr<XCFunctional> make_xc(const std::string& name, double exx_fraction, double omega) {
   std::string n;
   for (char ch : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -84,7 +94,8 @@ std::unique_ptr<XCFunctional> make_xc(const std::string& name, double exx_fracti
   if (n == "pbe0") return std::make_unique<GGA_PBE>(exx_fraction < 0.0 ? 0.25 : exx_fraction, 0.0);
   if (n == "hse06" || n == "hse") return std::make_unique<GGA_PBE>(exx_fraction < 0.0 ? 0.25 : exx_fraction, omega < 0.0 ? 0.11 : omega);
   if (n == "hf" || n == "hartree-fock") return std::make_unique<HartreeFock>();
-  fail("unknown xc functional '" + name + "' (available: pw92, pbe, pbe0, hse06, hf)");
+  if (n == "r2scan") return std::make_unique<MGGA_R2SCAN>();
+  fail("unknown xc functional '" + name + "' (available: pw92, pbe, pbe0, hse06, hf, r2scan)");
 }
 
 }  // namespace lsda

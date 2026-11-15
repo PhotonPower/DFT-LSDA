@@ -335,6 +335,29 @@ umverteilt werden. Thermostat und Neustart sind **nicht** getestet; längere Tra
   MPI, Systeme mit mehr als zwei Atomen. Die Vernachlässigung des langreichweitigen Rumpf-Valenz-Austauschs bei HSE
   ist nur abgeschätzt, nicht gemessen.
 
+## 7l. Meta-GGA (r²SCAN)
+
+* **Funktional** (Unit-Tests): homogenes Elektronengas = LSDA (2e-13); exakte Wasserstoffdichte: E_xc = −5/16 Ha
+  auf 1,5e-6 (Austausch im Einorbital-Grenzfall, Korrelation null); Ableitungen gegen finite Differenzen 4e-11.
+  Die Polynomkoeffizienten der Schaltfunktionen erfüllen f(1) = 0 und die Stetigkeit bei α = 2,5 (nachgerechnet).
+  **Nicht geprüft:** Zahlenvergleich mit einer Referenzimplementierung (libxc) im Bereich α ≈ 1 mit Gradienten
+  (Terme C_η, Δy, β(r_s)); dort sind nur die Grenzfälle abgesichert.
+* **Rumpfzustände** (Unit-Test): neu berechnete skalarrelativistische Rumpfzustände gegen die Datensätze:
+  Rumpfdichte 7e-6 (Al), 1,5e-5 (Fe, Ni); kinetische Energie des Rumpfs 7e-6 bzw. 1,1e-5 (relativ).
+* **On-site-Term** (Unit-Test, Fe spinpolarisiert): dH = dE/dD gegen finite Differenzen 2e-8; spinentarteter
+  Grenzfall exakt.
+* **Wasserstoffatom, selbstkonsistent** (Kasten 12 Bohr, 15 Ha, Dichtegitter 120 Ha): E = −0,49989 Ha (Sollwert des
+  Funktionals −0,5 Ha). Mit kleinem Kasten (10 Bohr) und grobem Dichtegitter (60 Ha): −0,50149 Ha – ein Maß für die
+  Gitterempfindlichkeit.
+* **Al, zwei Atome, 2×1×1 k-Punkte, 12 Ha:** Symmetrie an/aus: Energie identisch (2e-10). Kraft ohne Symmetrie
+  −0,0029159, finite Differenz der Energie −0,0029167 Ha/Bohr. Die Summe der Kräfte ist 5e-5 Ha/Bohr (Egg-Box-Effekt
+  des Dichtegitters; PBE: ~1e-6); mit Symmetrie wird sie auf äquivalente Atome verteilt (−0,0029422).
+  Dichtegitter 192 statt 96 Ha: Energie +2,7e-5 Ha, Kraft −0,0029970, Kraftsumme 1e-5 Ha/Bohr.
+* **Fe (bcc), spinpolarisiert:** nur Durchlauftest (konvergiert in 12 Iterationen); keine physikalische Aussage,
+  weil k-Gitter und Cutoff dafür zu grob waren.
+* **Nicht gerechnet:** Gitterkonstanten, Magnetmomente und Bildungsenergien mit r²SCAN; Vergleich mit einem
+  Referenzcode; MPI.
+
 ## 8. Laufzeit (Laptop, nur zur Orientierung)
 
 NiAl-Superzelle mit Ni-Leerstelle: 15 Atome, 150 Elektronen, 94 Bänder, ecut 20 Ha (5250 ebene Wellen),

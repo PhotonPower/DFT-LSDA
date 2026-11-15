@@ -51,6 +51,7 @@ PawSetup PawSetup::load(const std::string& path, int ntheta) {
   double rc_max = 0.0;
   for (const XmlNode* st : states->children_named("state")) {
     s.l_j.push_back(static_cast<int>(st->num("l")));
+    s.n_j.push_back(static_cast<int>(st->num("n", -1.0)));
     s.f_j.push_back(st->num("f", 0.0));
     s.e_j.push_back(st->num("e", 0.0));
     rc_max = std::max(rc_max, st->num("rc", 0.0));
@@ -749,6 +750,18 @@ double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::
     vss[s].resize(ncut);
   }
   std::vector<double> c(2 * nq_), tc(2 * 3 * nq_);
+  // meta-GGA: kinetic energy densities tau_s(r) = core/2 + sum_{l,q} ct(s, l, q) tq[l][q](r)
+  const bool mgga = xc.is_mgga();
+  const int nl = 2 * lmax + 1;
+  LSDA_CHECK(!mgga || has_core_tau, "onsite: prepare_mgga was not called");
+  std::vector<double> tau[2], vt[2], ct(mgga ? 2 * nl * nq_ : 0), i2(mgga ? nl * nq_ : 0);
+  std::vector<int> l_of(nL);
+  for (int L = 0; L < nL; ++L) l_of[L] = static_cast<int>(std::floor(std::sqrt(static_cast<double>(L)) + 1e-9));
+  if (mgga)
+    for (int s = 0; s < 2; ++s) {
+      tau[s].resize(ncut);
+      vt[s].resize(ncut);
+    }
   for (int k = 0; k < npts; ++k) {
     const double* y = ylm_quad_.col(k);
     const double* gy = &ylm_grad_quad_[3 * static_cast<size_t>(nL) * k];
@@ -762,6 +775,10 @@ double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::
         }
         c[s * nq_ + q] = spin_fac * sum;
         for (int a = 0; a < 3; ++a) tc[(s * 3 + a) * nq_ + q] = spin_fac * t[a];
+        if (mgga) {
+          for (int l = 0; l < nl; ++l) ct[(s * nl + l) * nq_ + q] = 0.0;
+          for (int L = 0; L < nL; ++L) ct[(s * nl + l_of[L]) * nq_ + q] += spin_fac * y[L] * dlq[s](L, q);
+        }
       }
     for (int pass = 0; pass < 2; ++pass) {  // 0: all-electron, 1: pseudo
       const auto& nq = pass == 0 ? nq_ae_ : nq_ps_;
@@ -792,6 +809,20 @@ double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::
         }
       }
       const int o = nspin == 2 ? 1 : 0;  // index of the second spin channel (identical to the first for nspin = 1)
+      if (mgga) {
+        const auto& tq = pass == 0 ? tq_ae_ : tq_ps_;
+        const std::vector<double>& tcore = pass == 0 ? tauc : tauct;
+        for (int s = 0; s < nspin; ++s) {
+          for (int i = 0; i < ncut; ++i) tau[s][i] = 0.5 * inv_s4pi * tcore[i];
+          for (int l = 0; l < nl; ++l)
+            for (int q = 0; q < nq_; ++q) {
+              const double cq = ct[(s * nl + l) * nq_ + q];
+              if (cq == 0.0) continue;
+              const double* t = tq[l][q].data();
+              for (int i = 0; i < ncut; ++i) tau[s][i] += cq * t[i];
+            }
+        }
+      }
       for (int i = 0; i < ncut; ++i) {
         double tuu = 0.0, tud = 0.0, tdd = 0.0;
         for (int a = 0; a < 3; ++a) {
@@ -803,8 +834,12 @@ double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::
         sud[i] = dn[0][i] * dn[o][i] + tud * inv_r2[i];
         sdd[i] = dn[o][i] * dn[o][i] + tdd * inv_r2[i];
       }
-      xc.evaluate_gga(ncut, n[0].data(), n[o].data(), suu.data(), sud.data(), sdd.data(), e.data(), v[0].data(), v[1].data(),
-                      vss[0].data(), vud.data(), vss[1].data());
+      if (mgga)
+        xc.evaluate_mgga(ncut, n[0].data(), n[o].data(), suu.data(), sud.data(), sdd.data(), tau[0].data(), tau[o].data(), e.data(),
+                         v[0].data(), v[1].data(), vss[0].data(), vud.data(), vss[1].data(), vt[0].data(), vt[1].data());
+      else
+        xc.evaluate_gga(ncut, n[0].data(), n[o].data(), suu.data(), sud.data(), sdd.data(), e.data(), v[0].data(), v[1].data(),
+                        vss[0].data(), vud.data(), vss[1].data());
       double esum = 0.0;
       for (int i = 0; i < ncut; ++i) esum += wr2_[i] * e[i];
       exc_total += sign * quad_.weights[k] * esum;
@@ -821,10 +856,20 @@ double PawSetup::onsite_xc_gga(int nspin, const std::vector<RMatrix>& dlq, std::
           for (int i = 0; i < ncut; ++i) sum += wr2_[i] * v[s][i] * f[i] + hr[i] * df[i];
           i1[q] = sum;
         }
+        if (mgga) {  // int r^2 v_tau tq[l][q] dr
+          const auto& tq = pass == 0 ? tq_ae_ : tq_ps_;
+          for (int l = 0; l < nl; ++l)
+            for (int q = 0; q < nq_; ++q) {
+              const double* t = tq[l][q].data();
+              double sum = 0.0;
+              for (int i = 0; i < ncut; ++i) sum += wr2_[i] * vt[s][i] * t[i];
+              i2[l * nq_ + q] = sum;
+            }
+        }
         for (int L = 0; L < nL; ++L) {
           const double f = wk * y[L];
           if (f == 0.0) continue;
-          for (int q = 0; q < nq_; ++q) (*vlq)[s](L, q) += f * i1[q];
+          for (int q = 0; q < nq_; ++q) (*vlq)[s](L, q) += f * (i1[q] + (mgga ? i2[l_of[L] * nq_ + q] : 0.0));
         }
         // tangential part: int r^2 (1/r^2) (2 e_ss T_s + e_ud T_s') . grad_Omega Y_L n_q dr
         for (int a = 0; a < 3; ++a) {
@@ -871,6 +916,7 @@ void PawSetup::build_tables(double qmax_wfc, double qmax_dense) {
   nct_q = spherical(nct);
   vbar_q = spherical(vbar);
   if (!nvt.empty()) nvt_q = spherical(nvt);
+  if (has_core_tau) tauct_q = spherical(tauct);
 }
 
 }  // namespace lsda

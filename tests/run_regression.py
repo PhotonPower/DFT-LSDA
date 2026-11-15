@@ -407,12 +407,44 @@ def hybrid_test(lsda, pseudo, tmp):
     return failures
 
 
+def mgga_test(lsda, pseudo, tmp):
+    """Meta-GGA r2SCAN: hydrogen atom (the functional is exact for one-electron densities up to self-consistency
+    and grid effects), symmetry on/off, and the force of a small Al cell against a finite difference of the energy
+    (computed without symmetry, where the forces are not averaged over equivalent atoms)."""
+    h_atom = HYBRID_H.replace("xc = hf", "xc = r2scan").replace("scale = 12.0", "scale = 10.0").replace("exx_tol = 1e-5\n", "dense_factor = 4\n")
+    al = HYBRID_AL.replace("xc = pbe0", "xc = r2scan").replace("ecut = 10", "ecut = 12").replace("scf_tol = 1e-10", "scf_tol = 1e-11")
+    res = {}
+    for name, text in (("h_r2scan", h_atom), ("al_r2scan", al), ("al_r2scan_nosym", al + "symmetry = false\n")):
+        with open(os.path.join(tmp, name + ".in"), "w") as f:
+            f.write(f"prefix = {name}\npseudo_dir = {pseudo}\ncheckpoint_wfc = false\n" + text)
+        out = subprocess.run([lsda, name + ".in"], cwd=tmp, capture_output=True, text=True)
+        if out.returncode != 0:
+            print(f"[FAIL] meta-GGA test, run {name}: exit code {out.returncode}\n{out.stdout[-800:]}{out.stderr}")
+            return 1
+        res[name] = json.load(open(os.path.join(tmp, name + ".json")))
+    failures = 0
+    e_h = res["h_r2scan"]["free_energy"]
+    ok = abs(e_h + 0.5) < 3e-3 and abs(e_h - (-0.5014937774)) < 2e-6
+    print(f"[{' ok ' if ok else 'FAIL'}] r2SCAN hydrogen atom (small box, coarse density grid): E = {e_h:.7f} Ha")
+    failures += 0 if ok else 1
+    a, b = res["al_r2scan"], res["al_r2scan_nosym"]
+    de = abs(a["free_energy"] - b["free_energy"])
+    ok = abs(a["free_energy"] - (-486.1084993392)) < 2e-7 and de < 1e-8
+    print(f"[{' ok ' if ok else 'FAIL'}] r2SCAN, two Al atoms: E = {a['free_energy']:.9f} Ha, symmetry on/off difference {de:.1e}")
+    failures += 0 if ok else 1
+    f2 = b["atoms"][1]["force"][0]
+    ok = abs(f2 - (-0.0029167)) < 3e-6
+    print(f"[{' ok ' if ok else 'FAIL'}] r2SCAN force without symmetry: {f2:.7f} Ha/bohr (finite difference -0.0029167)")
+    failures += 0 if ok else 1
+    return failures
+
+
 def main():
     lsda, pseudo = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     show = "--print" in sys.argv
     if "--only" in sys.argv:  # run a single group of self-contained tests
         which = sys.argv[sys.argv.index("--only") + 1]
-        groups = {"noncollinear": noncollinear_test, "hybrid": hybrid_test, "stress": stress_tests, "relax": relax_and_restart}
+        groups = {"noncollinear": noncollinear_test, "hybrid": hybrid_test, "mgga": mgga_test, "stress": stress_tests, "relax": relax_and_restart}
         with tempfile.TemporaryDirectory() as tmp:
             failures = groups[which](lsda, pseudo, tmp)
         print("PASSED" if failures == 0 else "FAILED")
@@ -455,6 +487,7 @@ def main():
             failures += stress_tests(lsda, pseudo, tmp)
             failures += noncollinear_test(lsda, pseudo, tmp)
             failures += hybrid_test(lsda, pseudo, tmp)
+            failures += mgga_test(lsda, pseudo, tmp)
     if not show:
         print("ALL REGRESSION TESTS PASSED" if failures == 0 else f"{failures} REGRESSION TEST(S) FAILED")
     return 1 if failures else 0

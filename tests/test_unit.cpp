@@ -720,6 +720,116 @@ static void test_eigensolvers(const std::string& dir) {
 }
 
 
+// ---- meta-GGA r2SCAN: limits and derivatives ---------------------------------------------------------------
+static void test_r2scan(const std::string& dir) {
+  std::printf("meta-GGA r2SCAN\n");
+  const MGGA_R2SCAN mgga;
+  const LSDA_PW92 lda;
+  auto eval = [&](double a, double b, double suu, double sud, double sdd, double ta, double tb, double* out) {
+    double e, v[7];
+    mgga.evaluate_mgga(1, &a, &b, &suu, &sud, &sdd, &ta, &tb, &e, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]);
+    if (out) std::copy(v, v + 7, out);
+    return e;
+  };
+  // uniform electron gas (no gradient, tau = tau_unif of each spin channel): LSDA
+  double err = 0.0;
+  for (const auto& d : {std::array<double, 2>{0.02, 0.02}, std::array<double, 2>{0.3, 0.1}, std::array<double, 2>{1.5, 0.2}}) {
+    const double cf = 0.3 * std::pow(6.0 * pi * pi, 2.0 / 3.0);  // tau_s = cf n_s^(5/3)
+    const double e = eval(d[0], d[1], 0, 0, 0, cf * std::pow(d[0], 5.0 / 3.0), cf * std::pow(d[1], 5.0 / 3.0), nullptr);
+    double el, vu, vd;
+    lda.evaluate(1, &d[0], &d[1], &el, &vu, &vd);
+    err = std::max(err, std::abs(e - el) / std::abs(el));
+  }
+  check(err < 1e-9, "r2SCAN equals LSDA for the uniform gas", err);
+  // hydrogen atom (exact density, fully polarized, tau = tau_W): E_x = -5/16 Ha, E_c = 0
+  {
+    double ex = 0.0, ec_part = 0.0;
+    const int nr = 4000;
+    const double rmax = 30.0, h = rmax / nr;
+    for (int i = 1; i <= nr; ++i) {
+      const double r = (i - 0.5) * h, n = std::exp(-2 * r) / pi, g2 = 4 * n * n, tw = g2 / (8 * n);
+      const double e = eval(n, 0.0, g2, 0.0, 0.0, tw, 0.0, nullptr);
+      ex += 4 * pi * r * r * h * e;
+      // correlation alone: difference to the same point with the exchange of a hypothetical unpolarized pair removed
+      (void)ec_part;
+    }
+    check(std::abs(ex + 0.3125) < 2e-4, "r2SCAN hydrogen atom: E_xc = -5/16 Ha (E_c = 0)", std::abs(ex + 0.3125));
+  }
+  // recomputed core states (needed for the core kinetic energy density) against the datasets
+  for (const char* name : {"Al.LDA_PW-JTH.xml", "Al.GGA_PBE-JTH.xml", "Fe.GGA_PBE-JTH.xml", "Ni.GGA_PBE-JTH.xml"}) {
+    PawSetup s = PawSetup::load(dir + "/" + name);
+    s.prepare_mgga();
+    std::printf("    %-20s core density deviation %.2e, core kinetic energy deviation %.2e\n", name, s.check_core_density, s.check_core_kinetic);
+    check(s.check_core_density < 1e-4, std::string(name) + ": recomputed core density", s.check_core_density);
+    check(s.check_core_kinetic < 1e-4, std::string(name) + ": recomputed core kinetic energy", s.check_core_kinetic);
+    double tneg = 0.0, jump = 0.0;
+    for (size_t i = 0; i < s.tauct.size(); ++i) tneg = std::min(tneg, s.tauct[i]);
+    const int ip = s.grid.index_of(s.r_paw);
+    for (int i = ip; i < s.grid.size(); ++i) jump = std::max(jump, std::abs(s.tauct[i] - s.tauc[i]));
+    check(tneg >= 0.0 && jump == 0.0, std::string(name) + ": pseudo core tau >= 0, equal to tau_c outside", jump - tneg);
+  }
+  // on-site meta-GGA term: dH = dE/dD (Fe, spin-polarized) and spin-paired limit
+  {
+    PawSetup s = PawSetup::load(dir + "/Fe.GGA_PBE-JTH.xml");
+    s.prepare_mgga();
+    const int ni = s.ni;
+    RMatrix D[2], dD[2], dH[2];
+    const RMatrix d0 = s.atomic_density_matrix();
+    unsigned seed = 4711;
+    auto rnd = [&]() {
+      seed = seed * 1664525u + 1013904223u;
+      return static_cast<double>(seed >> 8) / 16777216.0 - 0.5;
+    };
+    for (int sp = 0; sp < 2; ++sp) {
+      D[sp] = d0;
+      dD[sp].resize(ni, ni);
+      for (int i = 0; i < ni; ++i)
+        for (int j = 0; j <= i; ++j) {
+          D[sp](i, j) = D[sp](j, i) = (sp == 0 ? 0.6 : 0.4) * d0(i, j) + 0.002 * rnd();
+          dD[sp](i, j) = dD[sp](j, i) = 0.02 * rnd();
+        }
+    }
+    s.onsite(2, D, dH, mgga);
+    double lin = 0.0;
+    for (int sp = 0; sp < 2; ++sp)
+      for (int i = 0; i < ni; ++i)
+        for (int j = 0; j < ni; ++j) lin += dH[sp](i, j) * dD[sp](i, j);
+    const double h = 1e-4;
+    RMatrix Dp[2] = {D[0], D[1]}, Dm[2] = {D[0], D[1]};
+    for (int sp = 0; sp < 2; ++sp)
+      for (size_t i = 0; i < D[sp].size(); ++i) {
+        Dp[sp].data()[i] += h * dD[sp].data()[i];
+        Dm[sp].data()[i] -= h * dD[sp].data()[i];
+      }
+    const double fd = (s.onsite(2, Dp, nullptr, mgga) - s.onsite(2, Dm, nullptr, mgga)) / (2 * h);
+    check(std::abs(fd - lin) < 1e-5 * std::max(1.0, std::abs(lin)), "Fe on-site r2SCAN: dH = dE/dD", std::abs(fd - lin));
+    RMatrix half[2] = {D[0], D[0]};
+    for (int sp = 0; sp < 2; ++sp)
+      for (size_t i = 0; i < half[sp].size(); ++i) half[sp].data()[i] *= 0.5;
+    const double e1 = s.onsite(1, D, nullptr, mgga), e2 = s.onsite(2, half, nullptr, mgga);
+    check(std::abs(e1 - e2) < 1e-9 * std::abs(e1), "Fe on-site r2SCAN: spin-paired limit", std::abs(e1 - e2));
+  }
+  // derivatives against finite differences
+  {
+    const double x0[7] = {0.21, 0.13, 0.05, 0.02, 0.03, 0.19, 0.11};
+    double v[7];
+    eval(x0[0], x0[1], x0[2], x0[3], x0[4], x0[5], x0[6], v);
+    const int map[7] = {0, 1, 2, 3, 4, 5, 6};  // output order: vup, vdn, vsuu, vsud, vsdd, vtup, vtdn
+    err = 0.0;
+    for (int k = 0; k < 7; ++k) {
+      double xp[7], xm[7];
+      std::copy(x0, x0 + 7, xp);
+      std::copy(x0, x0 + 7, xm);
+      const double h = 1e-5 * x0[k];
+      xp[k] += h;
+      xm[k] -= h;
+      const double fd = (eval(xp[0], xp[1], xp[2], xp[3], xp[4], xp[5], xp[6], nullptr) - eval(xm[0], xm[1], xm[2], xm[3], xm[4], xm[5], xm[6], nullptr)) / (2 * h);
+      err = std::max(err, std::abs(fd - v[map[k]]));
+    }
+    check(err < 1e-7, "r2SCAN derivatives (finite differences)", err);
+  }
+}
+
 // ---- hybrid functionals: short-range PBE exchange, on-site exact exchange, dataset conventions -------------
 static void test_exchange(const std::string& dir) {
   std::printf("Hybrid functionals\n");
@@ -918,6 +1028,7 @@ int main(int argc, char** argv) {
     test_paw(dir, false);
     test_paw(dir, true);
     test_exchange(dir);
+    test_r2scan(dir);
   } catch (const std::exception& e) {
     std::printf("exception: %s\n", e.what());
     return 2;

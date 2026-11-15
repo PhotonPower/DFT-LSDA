@@ -12,6 +12,12 @@ class XCFunctional {
   virtual ~XCFunctional() = default;
   virtual std::string name() const = 0;
   virtual bool is_gga() const { return false; }
+  // Meta-GGA: depends in addition on the kinetic energy densities tau_s = 1/2 sum_i f_i |grad psi_i,s|^2;
+  // returns in addition v_tau,s = d e_xc / d tau_s (is_gga() is true as well: gradients are needed).
+  virtual bool is_mgga() const { return false; }
+  virtual void evaluate_mgga(size_t n, const double* nup, const double* ndn, const double* suu, const double* sud,
+                             const double* sdd, const double* tup, const double* tdn, double* exc, double* vup,
+                             double* vdn, double* vsuu, double* vsud, double* vsdd, double* vtup, double* vtdn) const;
   // Hybrid functionals: fraction of exact (Fock) exchange and its screening parameter omega (1/bohr);
   // omega = 0: full Coulomb kernel, omega > 0: short-range kernel erfc(omega r)/r.
   virtual double exx_fraction() const { return 0.0; }
@@ -56,6 +62,18 @@ class GGA_PBE final : public XCFunctional {
 
  private:
   double exx_, omega_;
+};
+
+// r2SCAN meta-GGA (Furness et al., J. Phys. Chem. Lett. 11, 8208 (2020))
+class MGGA_R2SCAN final : public XCFunctional {
+ public:
+  std::string name() const override { return "meta-GGA r2SCAN"; }
+  bool is_gga() const override { return true; }
+  bool is_mgga() const override { return true; }
+  void evaluate(size_t, const double*, const double*, double*, double*, double*) const override;
+  void evaluate_mgga(size_t n, const double* nup, const double* ndn, const double* suu, const double* sud,
+                     const double* sdd, const double* tup, const double* tdn, double* exc, double* vup, double* vdn,
+                     double* vsuu, double* vsud, double* vsdd, double* vtup, double* vtdn) const override;
 };
 
 // Hartree-Fock: exact exchange only, no semilocal exchange-correlation (for tests and reference calculations)

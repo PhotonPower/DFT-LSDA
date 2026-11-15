@@ -58,7 +58,9 @@ std::vector<Vec3> Calculation::forces() {
         }
         const double arg = -(g[0] * pos[a][0] + g[1] * pos[a][1] + g[2] * pos[a][2]);
         const cplx phase(std::cos(arg), std::sin(arg));
-        const cplx z = cv * ff_nct_[is][ig] + cn * ff_vbar_[is][ig] + ch * (4 * pi * cplx(even, -odd));
+        cplx z = cv * ff_nct_[is][ig] + cn * ff_vbar_[is][ig] + ch * (4 * pi * cplx(even, -odd));
+        if (!vtau_G_.empty())  // meta-GGA: pseudo core kinetic energy density moves with the atom
+          z += std::conj(vtau_G_.size() == 2 ? 0.5 * (vtau_G_[0][ig] + vtau_G_[1][ig]) : vtau_G_[0][ig]) * ff_tauct_[is][ig];
         const double val = (phase * z).imag();
         for (int d = 0; d < 3; ++d) loc[3 * a + d] -= g[d] * val;
       }
@@ -157,6 +159,7 @@ Mat3 Calculation::stress() {
   LSDA_CHECK(have_occ_, "stress: run scf() first");
   LSDA_CHECK(!noncol_, "the stress tensor is not implemented for non-collinear calculations");
   LSDA_CHECK(!hybrid_, "the stress tensor is not implemented for hybrid functionals");
+  LSDA_CHECK(!mgga_, "the stress tensor is not implemented for meta-GGA functionals");
   const int nat = c_.natoms(), ng = gs_.ng, nL = (lmax_comp_ + 1) * (lmax_comp_ + 1);
   const int ca[6] = {0, 1, 2, 1, 0, 0}, cb[6] = {0, 1, 2, 2, 2, 1};  // xx yy zz yz xz xy
   double sig[6] = {0, 0, 0, 0, 0, 0};                                 // dF/d eps (energy units)

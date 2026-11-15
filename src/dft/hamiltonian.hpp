@@ -54,6 +54,8 @@ class Hamiltonian {
   int nproj() const { return spinor_ ? 2 * proj_.nproj : proj_.nproj; }
   // exact exchange in compressed form, V_x = -sum_t c_t xi_t xi_t^H (hybrid functionals); part of apply_local
   void add_exchange(const CMatrix* xi, double coefficient) { xi_.push_back({xi, coefficient}); }
+  // meta-GGA: additional term -1/2 div(v_tau(r) grad) with v_tau on the coarse grid (collinear case only)
+  void set_tau_potential(const double* vtau) { vtau_ = vtau; }
   mutable long n_applications = 0;
 
  private:
@@ -65,6 +67,7 @@ class Hamiltonian {
   std::vector<const RMatrix*> dS_;
   bool spinor_ = false;
   std::vector<std::pair<const CMatrix*, double>> xi_;
+  const double* vtau_ = nullptr;
 };
 
 }  // namespace lsda

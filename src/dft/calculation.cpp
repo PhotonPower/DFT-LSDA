@@ -53,6 +53,12 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
         sp.setup.prepare_exchange(xc_->exx_screening());
       }
     }
+    mgga_ = xc_->is_mgga();
+    if (mgga_) {  // start functional until wavefunctions (and their kinetic energy density) exist
+      xc_other_ = make_xc("pbe");
+      semilocal = xc_other_->name();
+      LSDA_CHECK(!noncol_, "meta-GGA functionals are not implemented for non-collinear magnetism");
+    }
     if (!from_data.empty() && make_xc(from_data)->name() != semilocal && p_.verbosity > 0)
       logf("\n  WARNING: xc functional '%s' differs from the one of the PAW datasets (%s)\n", p_.xc.c_str(), from_data.c_str());
   }
@@ -134,6 +140,14 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
   ff_nvt_.resize(c_.species.size());
   for (size_t is = 0; is < c_.species.size(); ++is) {
     PawSetup& s = c_.species[is].setup;
+    if (mgga_) {
+      s.prepare_mgga();  // core kinetic energy density from recomputed core states
+      if (p_.verbosity > 0)
+        logf("  Core states of %-2s       : recomputed; deviation of the core density %.1e, of the core kinetic energy %.1e\n",
+             s.symbol.c_str(), s.check_core_density, s.check_core_kinetic);
+      LSDA_CHECK(s.check_core_density < 1e-3 && s.check_core_kinetic < 1e-3,
+                 "recomputed core states of " + s.symbol + " do not reproduce the dataset (meta-GGA needs the core kinetic energy density)");
+    }
     s.build_tables(qmax_wfc, qmax_dense);
     lmax_comp_ = std::max(lmax_comp_, 2 * s.lmax);
     const int nl = 2 * s.lmax + 1;
@@ -149,6 +163,11 @@ Calculation::Calculation(Crystal crystal, const Params& params) : c_(std::move(c
       ff_nct_[is][ig] = s.nct_q(q);
       ff_vbar_[is][ig] = s.vbar_q(q);
       ff_nvt_[is][ig] = s.nvt_q(q);
+    }
+    if (mgga_) {
+      if (ff_tauct_.empty()) ff_tauct_.resize(c_.species.size());
+      ff_tauct_[is].resize(ng);
+      for (int ig = 0; ig < ng; ++ig) ff_tauct_[is][ig] = s.tauct_q(std::sqrt(gs_.g2[ig]));
     }
   }
   LSDA_CHECK(lmax_comp_ <= 6, "angular momentum of the compensation charges too large");
@@ -234,6 +253,19 @@ void Calculation::setup_structure() {
     }
     nct_G_[ig] = sn * inv_vol;
     vbar_G_[ig] = sv * inv_vol;
+  }
+  if (mgga_) {  // pseudo core kinetic energy density
+    tauct_G_.assign(ng, 0.0);
+#pragma omp parallel for schedule(static)
+    for (int ig = 0; ig < ng; ++ig) {
+      const double* g = &gs_.g[3 * ig];
+      cplx st = 0.0;
+      for (int a = 0; a < nat; ++a) {
+        const double arg = -(g[0] * pos[a][0] + g[1] * pos[a][1] + g[2] * pos[a][2]);
+        st += cplx(std::cos(arg), std::sin(arg)) * ff_tauct_[c_.atoms[a].species][ig];
+      }
+      tauct_G_[ig] = st * inv_vol;
+    }
   }
 }
 
@@ -602,8 +634,43 @@ Calculation::Functional Calculation::evaluate(const RhoG& rho, const DMat& D, bo
     }
     const std::vector<double>& nd = nspin_ == 2 ? ndn : nup;
     vdn.resize(nfine);
-    xc_->evaluate_gga(nfine, nup.data(), nd.data(), suu.data(), sud.data(), sdd.data(), exc.data(), vup.data(), vdn.data(),
-                      vsuu.data(), vsud.data(), vsdd.data());
+    if (xc_->is_mgga()) {
+      // kinetic energy densities of the current wavefunctions plus the pseudo core part
+      LSDA_CHECK(have_tau_, "meta-GGA: no kinetic energy density");
+      std::vector<std::vector<double>> tk(nspin_, std::vector<double>(nfine)), vt(2, std::vector<double>(nfine));
+      for (int s = 0; s < nspin_; ++s) {
+        std::fill(work.begin(), work.end(), cplx(0.0));
+        for (int ig = 0; ig < ng; ++ig) work[gs_.idx_fine[ig]] = tau_[s][ig] + (nspin_ == 2 ? 0.5 : 1.0) * tauct_G_[ig];
+        fft_f_.backward(work.data());
+        for (size_t i = 0; i < nfine; ++i) tk[s][i] = fs * work[i].real();
+      }
+      xc_->evaluate_mgga(nfine, nup.data(), nd.data(), suu.data(), sud.data(), sdd.data(), tk[0].data(), tk[nspin_ == 2 ? 1 : 0].data(),
+                         exc.data(), vup.data(), vdn.data(), vsuu.data(), vsud.data(), vsdd.data(), vt[0].data(), vt[1].data());
+      if (build) {  // v_tau on the dense sphere and on the coarse grid of the wavefunctions
+        vtau_G_.assign(nspin_, std::vector<cplx>(ng));
+        vtau_coarse_.assign(nspin_, std::vector<double>(fft_c_.size()));
+        CVec wc(fft_c_.size());
+        const double inv = 1.0 / static_cast<double>(nfine);
+        for (int s = 0; s < nspin_; ++s) {
+          for (size_t i = 0; i < nfine; ++i) work[i] = vt[s][i];
+          fft_f_.forward(work.data());
+          std::fill(wc.begin(), wc.end(), cplx(0.0));
+          for (int ig = 0; ig < ng; ++ig) {
+            vtau_G_[s][ig] = work[gs_.idx_fine[ig]] * inv;
+            if (gs_.idx_coarse[ig] >= 0) wc[gs_.idx_coarse[ig]] = vtau_G_[s][ig];
+          }
+          fft_c_.backward(wc.data());
+          for (size_t i = 0; i < wc.size(); ++i) vtau_coarse_[s][i] = wc[i].real();
+        }
+      }
+    } else {
+      xc_->evaluate_gga(nfine, nup.data(), nd.data(), suu.data(), sud.data(), sdd.data(), exc.data(), vup.data(), vdn.data(),
+                        vsuu.data(), vsud.data(), vsdd.data());
+      if (build) {
+        vtau_G_.clear();
+        vtau_coarse_.clear();
+      }
+    }
     if (build) {  // integrals for the stress tensor: sum_s (de/d grad n_s)_a (grad n_s)_b
       const int ca[6] = {0, 1, 2, 1, 0, 0}, cb[6] = {0, 1, 2, 2, 2, 1};
       for (int c = 0; c < 6; ++c) {
@@ -719,6 +786,12 @@ double Calculation::double_counting(const RhoG& rho, const DMat& D) const {
   for (int a = 0; a < c_.natoms(); ++a)
     for (int s = 0; s < ncomp_; ++s)
       for (size_t i = 0; i < D[a][s].size(); ++i) dc += dH_[a][s].data()[i] * D[a][s].data()[i];
+  // meta-GGA: int v_tau tau of the current wavefunctions (contained in the band energy)
+  for (size_t s = 0; s < vtau_G_.size(); ++s) {
+    double sum = 0.0;
+    for (int ig = 0; ig < gs_.ng; ++ig) sum += (std::conj(vtau_G_[s][ig]) * tau_[s][ig]).real();
+    dc += sum * c_.volume;
+  }
   return dc;
 }
 
@@ -738,6 +811,7 @@ Hamiltonian Calculation::hamiltonian(int ik, int s, const Projectors& proj) cons
   std::vector<const RMatrix*> dh(nat);
   for (int a = 0; a < nat; ++a) dh[a] = &dH_[a][s];
   Hamiltonian h(basis_[ik], fft_c_, vcoarse_[s].data(), proj, std::move(dh), std::move(ds));
+  if (!vtau_coarse_.empty()) h.set_tau_potential(vtau_coarse_[s].data());
   if (exx_active_)
     for (size_t i = 0; i < exx_hist_.size(); ++i)
       if (exx_coef_[i] != 0.0) h.add_exchange(&exx_hist_[i].ace[static_cast<size_t>(ik) * nspin_ + s], exx_coef_[i]);
@@ -815,7 +889,7 @@ void Calculation::solve_bands(double tol, int max_iter, double& max_residual, in
 // =====================================================================================
 //  Density from wavefunctions
 // =====================================================================================
-void Calculation::compute_density(RhoG& rho, DMat& D) const {
+void Calculation::compute_density(RhoG& rho, DMat& D, RhoG* tau) const {
   ScopedTimer timer("density");
   const int nk = static_cast<int>(kpts_.size()), nat = c_.natoms(), ng = gs_.ng;
   const size_t nc = fft_c_.size();
@@ -897,8 +971,9 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
         if (gs_.idx_coarse[ig] >= 0) rho[c][ig] = work[gs_.idx_coarse[ig]] * inv;
     }
   }
+  if (tau) tau->assign(nspin_, std::vector<cplx>(ng, 0.0));
   for (int s = 0; s < (noncol_ ? 0 : nspin_); ++s) {
-    std::vector<double> rho_r(nc, 0.0);
+    std::vector<double> rho_r(nc, 0.0), tau_r(tau ? nc : 0, 0.0);
     for (int ik = 0; ik < nk; ++ik) {
       if (!par::owns(ik)) continue;
       const size_t ks = static_cast<size_t>(ik) * nspin_ + s;
@@ -907,7 +982,7 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
       const std::vector<double>& f = occ_.f[ks];
 #pragma omp parallel
       {
-        std::vector<double> acc(nc, 0.0);
+        std::vector<double> acc(nc, 0.0), acc_t(tau ? nc : 0, 0.0);
         CVec work(nc);
         bool used = false;
 #pragma omp for schedule(dynamic, 1) nowait
@@ -920,10 +995,21 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
           for (int ig = 0; ig < b.npw; ++ig) work[b.idx[ig]] = xn[ig];
           fft_c_.backward_pruned(work.data(), b.columns, b.planes);
           for (size_t i = 0; i < nc; ++i) acc[i] += w * std::norm(work[i]);
+          if (tau)  // 1/2 |grad psi|^2
+            for (int d = 0; d < 3; ++d) {
+              std::fill(work.begin(), work.end(), cplx(0.0));
+              for (int ig = 0; ig < b.npw; ++ig) work[b.idx[ig]] = b.kg[3 * ig + d] * xn[ig];
+              fft_c_.backward_pruned(work.data(), b.columns, b.planes);
+              for (size_t i = 0; i < nc; ++i) acc_t[i] += 0.5 * w * std::norm(work[i]);
+            }
         }
         if (used) {
 #pragma omp critical
-          for (size_t i = 0; i < nc; ++i) rho_r[i] += acc[i];
+          {
+            for (size_t i = 0; i < nc; ++i) rho_r[i] += acc[i];
+            if (tau)
+              for (size_t i = 0; i < nc; ++i) tau_r[i] += acc_t[i];
+          }
         }
       }
       // density matrices
@@ -948,7 +1034,15 @@ void Calculation::compute_density(RhoG& rho, DMat& D) const {
     const double inv = 1.0 / static_cast<double>(nc);
     for (int ig = 0; ig < ng; ++ig)
       if (gs_.idx_coarse[ig] >= 0) rho[s][ig] = work[gs_.idx_coarse[ig]] * inv;
+    if (tau) {
+      par::sum(tau_r.data(), nc);
+      for (size_t i = 0; i < nc; ++i) work[i] = tau_r[i];
+      fft_c_.forward(work.data());
+      for (int ig = 0; ig < ng; ++ig)
+        if (gs_.idx_coarse[ig] >= 0) (*tau)[s][ig] = work[gs_.idx_coarse[ig]] * inv;
+    }
   }
+  if (tau) symmetrize_density(*tau);
   if (par::size() > 1) {
     std::vector<double> buf;
     for (const auto& da : D)
@@ -1125,9 +1219,15 @@ void Calculation::unpack(const std::vector<double>& x, RhoG& rho, DMat& D) const
 // =====================================================================================
 //  Self-consistency loop
 // =====================================================================================
+void Calculation::use_start_xc(bool on) {
+  if (!xc_other_ || on == start_xc_active_) return;
+  std::swap(xc_, xc_other_);
+  start_xc_active_ = on;
+}
+
 void Calculation::set_exchange_active(bool on) {
   if (!hybrid_ || on == exx_active_) return;
-  std::swap(xc_, xc_other_);
+  use_start_xc(!on);
   exx_active_ = on;
 }
 
@@ -1273,6 +1373,7 @@ bool Calculation::scf_cycle() {
   ScopedTimer timer("scf");
   LSDA_CHECK(have_density_, "scf: no start density");
   const bool verbose = p_.verbosity > 0;
+  if (mgga_ && !have_tau_) use_start_xc(true);  // meta-GGA: the first band solution uses the PBE potential
   Functional f_in = evaluate(rho_, D_, true);
   if (verbose)
     logf("\n  iter      free energy (Ha)     E_KS - E_Harris      |residual|^2    magnet.   eig.resid   time(s)\n");
@@ -1305,7 +1406,11 @@ bool Calculation::scf_cycle() {
 
     RhoG rho_out;
     DMat D_out;
-    compute_density(rho_out, D_out);
+    compute_density(rho_out, D_out, mgga_ ? &tau_ : nullptr);
+    if (mgga_) {
+      have_tau_ = true;
+      use_start_xc(false);
+    }
     const Functional f_out = evaluate(rho_out, D_out, false);
     // exx: linearized exact-exchange energy (the band energy contains sum f <psi|V_x|psi>)
     const double exx = exx_active_ ? exx_shift_ : 0.0;
@@ -1554,7 +1659,8 @@ std::vector<std::vector<double>> Calculation::eigenvalues_at(const Vec3& kfrac, 
       dh[a] = &dH_[a][s];
       ds[a] = &dS_[a];
     }
-    const Hamiltonian h(b, fft_c_, vcoarse_[s].data(), proj, dh, ds);
+    Hamiltonian h(b, fft_c_, vcoarse_[s].data(), proj, dh, ds);
+    if (!vtau_coarse_.empty()) h.set_tau_potential(vtau_coarse_[s].data());
     // start: lowest states spanned by the atomic orbitals, padded with random vectors
     CMatrix ao = atomic_orbitals(b);
     const int nao = ao.cols(), nrand = std::max(0, nbands_ - nao) + (nao < nbands_ ? 0 : std::min(4, nbands_));

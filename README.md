@@ -90,7 +90,7 @@ end
 | `ecut_dense` / `dense_factor` | 8·`ecut` | Cutoff der dichten G-Kugel (≥ 4·`ecut`; ab Faktor 6 auf < 1e-6 Ha konvergiert) |
 | `kpoints`, `kshift` | `1 1 1`, `0 0 0` | Monkhorst-Pack-Gitter, Verschiebung (0 oder 0.5) |
 | `symmetry` | `true` | Raumgruppensymmetrie verwenden |
-| `xc` | aus den Datensätzen | `pw92` (LSDA), `pbe`, Hybridfunktionale `pbe0`, `hse06` oder `hf` (Hartree-Fock); ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
+| `xc` | aus den Datensätzen | `pw92` (LSDA), `pbe`, Meta-GGA `r2scan`, Hybridfunktionale `pbe0`, `hse06` oder `hf` (Hartree-Fock); ohne Angabe gilt das Funktional, mit dem die PAW-Datensätze erzeugt wurden (`*.LDA_PW-JTH.xml` bzw. `*.GGA_PBE-JTH.xml`) |
 | `exx_fraction` | 0.25 (`hf`: 1) | Anteil des exakten Austauschs |
 | `exx_screening` | 0.11 (`hse06`), 0 (`pbe0`) | Abschirmparameter ω in 1/Bohr (VASP-Konvention 0,2 Å⁻¹ = 0.1058) |
 | `exx_tol` | 1e-6 (`scf`), 1e-9 (Aufgaben mit Kräften) | Konvergenz der äußeren Austausch-Schleife (Ha) |
@@ -197,6 +197,32 @@ Einschränkungen des jetzigen Stands: nur LSDA (kein PBE), keine Symmetrie und k
 k-Gitter), keine Spin-Bahn-Kopplung, keine Zwangsbedingungen an die Momentrichtungen (sie sind frei und
 können während des SCF drehen); Spannungstensor, Zustandsdichte, Bandstruktur und Wellenfunktions-Checkpoint
 sind in diesem Modus nicht verfügbar. Kräfte, Relaxation, DFT+U und MPI funktionieren.
+
+## Meta-GGA (r²SCAN)
+
+`xc = r2scan` (Furness et al. 2020) hängt zusätzlich von der kinetischen Energiedichte τ = ½ Σ f |∇ψ|² ab.
+
+* **Ebene Wellen:** τ̃ wird aus den Wellenfunktionen auf dem Gitter gebildet; v_τ = ∂e_xc/∂τ geht als Term
+  −½ ∇·(v_τ ∇) in den Hamiltonoperator ein (verallgemeinertes Kohn-Sham-Schema, drei zusätzliche FFT-Paare pro
+  Band). τ wird nicht gemischt; das Potential entsteht aus der gemischten Dichte und dem τ der aktuellen
+  Wellenfunktionen. Die erste Bandlösung benutzt das PBE-Potential.
+* **PAW:** τ in den Kugeln aus den Partialwellen (analytische Winkelabhängigkeit über Gaunt-Koeffizienten).
+* **Rumpf:** Die JTH-Datensätze enthalten keine kinetische Energiedichte des Rumpfs. Die Rumpfzustände werden
+  deshalb beim Start neu berechnet: Das All-Elektronen-Potential des Referenzatoms wird aus Rumpfdichte und
+  gebundenen Partialwellen rekonstruiert und die skalarrelativistische Radialgleichung gelöst. Kontrolle bei jedem
+  Lauf: Abweichung der neu berechneten Rumpfdichte und Rumpf-Kinetik vom Datensatz (Ausgabezeile
+  `Core states of ...`; typisch 1e-5, Abbruch über 1e-3). Die Pseudo-Rumpf-τ setzt τ_c innerhalb des
+  Anpassradius der Pseudo-Rumpfdichte glatt fort.
+* Verwendet werden die PBE-Datensätze (wie bei anderen PAW-Programmen üblich).
+
+Einschränkungen und Hinweise:
+
+* kein Spannungstensor, kein nichtkollinearer Magnetismus, keine Kombination mit Hybridfunktionalen; Symmetrie,
+  Kräfte, Relaxation, NEB, Phononen, MD, DFT+U und MPI nutzen die vorhandenen Wege (MPI für Meta-GGA nicht getestet).
+* **Gitterempfindlichkeit:** Meta-GGAs reagieren deutlich stärker auf das Dichtegitter als PBE. Im Al-Test ändert
+  sich die Kraft zwischen `dense_factor` 8 und 16 um 8e-5 Ha/Bohr, die Summe der Kräfte (Egg-Box-Effekt) fällt von
+  5e-5 auf 1e-5 Ha/Bohr. Für Kräfte und kleine Energiedifferenzen `dense_factor`/`ecut_dense` konvergieren.
+* Die Auswertung des Funktionals mit Dualzahlen ist pro Gitterpunkt etwa zehnmal teurer als PBE.
 
 ## Hybridfunktionale
 
@@ -380,8 +406,8 @@ Siehe `VALIDATION.md` für die Zahlen. Kurzfassung der Prüfungen, die der Code 
 ```
 src/base      Typen, Timer, lineare Algebra (BLAS/LAPACK), FFT, MPI-Schicht, Dualzahlen
 src/math      Kugelflächenfunktionen, Gaunt-Koeffizienten, Bessel-Transformation, Radialgitter
-src/xc        XC-Funktionale (Schnittstelle XCFunctional; LSDA-PW92, PBE, PBE0/HSE-Anteile, Hartree-Fock)
-src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien
+src/xc        XC-Funktionale (Schnittstelle XCFunctional; LSDA-PW92, PBE, r2SCAN, PBE0/HSE-Anteile, Hartree-Fock)
+src/paw       PAW-XML-Leser, On-site-Tensoren und -Energien, Rumpfzustände (core_states.cpp)
 src/crystal   Kristall, Raumgruppensymmetrie, k-Punkte
 src/dft       Basis, Hamiltonoperator, Eigenlöser (PPCG, LOBPCG), Besetzungen, Mischer, SCF, Kräfte, Spannung,
               exakter Austausch (exchange.cpp), Relaxation, NEB, Phononen, elastische Konstanten, Molekulardynamik

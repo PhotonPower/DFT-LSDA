@@ -152,7 +152,7 @@ class Calculation {
   void project_on_shape(const std::vector<cplx>& v, std::vector<std::vector<double>>& W) const;
   void solve_bands(double tol, int max_iter, double& max_residual, int& not_converged);
   Hamiltonian hamiltonian(int ik, int s, const Projectors& proj) const;
-  void compute_density(RhoG& rho, DMat& D) const;
+  void compute_density(RhoG& rho, DMat& D, RhoG* tau = nullptr) const;
   void symmetrize_density(RhoG& rho) const;
   void symmetrize_D(DMat& D) const;
   double double_counting(const RhoG& rho, const DMat& D) const;
@@ -164,7 +164,18 @@ class Calculation {
   Params p_;
   std::unique_ptr<XCFunctional> xc_;
   // ---- hybrid functionals (exchange.cpp) ----
-  std::unique_ptr<XCFunctional> xc_other_;  // the functional that is currently not active (semilocal start / hybrid)
+  std::unique_ptr<XCFunctional> xc_other_;  // the functional that is currently not active (semilocal start / hybrid, meta-GGA)
+  bool start_xc_active_ = false;            // the semilocal start functional is in use
+  void use_start_xc(bool on);
+  // ---- meta-GGA ----
+  // tau_: kinetic energy density of the current wavefunctions (not mixed); v_tau = d e_xc / d tau enters the
+  // Hamiltonian as -1/2 div(v_tau grad). Until wavefunctions exist the start functional is used.
+  bool mgga_ = false, have_tau_ = false;
+  RhoG tau_;
+  std::vector<std::vector<cplx>> vtau_G_;
+  std::vector<std::vector<double>> vtau_coarse_;
+  std::vector<std::vector<double>> ff_tauct_;
+  std::vector<cplx> tauct_G_;
   bool hybrid_ = false, exx_active_ = false, exx_ready_ = false, exx_truncated_ = true;
   double exx_fraction_ = 0.0, exx_omega_ = 0.0, exx_rc_ = 0.0, exx_v0_ = 0.0;
   double exx_shift_ = 0.0;      // constant of the linearized exchange energy of the inner loop, -1/2 Tr[gamma_in V_in]

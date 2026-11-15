@@ -113,6 +113,15 @@ void Hamiltonian::apply_local(const cplx* x, int nb, cplx* kx) const {
         for (size_t i = 0; i < ngrid; ++i) work[i] *= vloc_[0][i];
         fft_.forward_pruned(work.data(), pw_.columns, pw_.planes);
         for (int ig = 0; ig < npw; ++ig) hb[ig] = pw_.kin[ig] * xb[ig] + inv_n * work[pw_.idx[ig]];
+        if (vtau_)  // sum_d (k+G)_d FFT[v_tau FFT^-1[(k+G)_d x]] / 2
+          for (int d = 0; d < 3; ++d) {
+            std::fill(work.begin(), work.end(), cplx(0.0));
+            for (int ig = 0; ig < npw; ++ig) work[pw_.idx[ig]] = pw_.kg[3 * ig + d] * xb[ig];
+            fft_.backward_pruned(work.data(), pw_.columns, pw_.planes);
+            for (size_t i = 0; i < ngrid; ++i) work[i] *= vtau_[i];
+            fft_.forward_pruned(work.data(), pw_.columns, pw_.planes);
+            for (int ig = 0; ig < npw; ++ig) hb[ig] += 0.5 * inv_n * pw_.kg[3 * ig + d] * work[pw_.idx[ig]];
+          }
         continue;
       }
       // spinor: (V psi)_up = (v + Bz) psi_up + (Bx - i By) psi_dn,  (V psi)_dn = (Bx + i By) psi_up + (v - Bz) psi_dn
