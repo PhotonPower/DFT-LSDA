@@ -86,6 +86,9 @@ target_link_libraries(lsda PRIVATE lsdacore)
 
 # --- tests ------------------------------------------------------------------
 enable_testing()
+if(NOT EXISTS ${CMAKE_SOURCE_DIR}/pseudos/Al.LDA_PW-JTH.xml)
+  message(WARNING "PAW datasets not found: run tools/fetch_pseudos.sh before the tests")
+endif()
 add_executable(test_unit tests/test_unit.cpp)
 target_link_libraries(test_unit PRIVATE lsdacore)
 add_test(NAME unit COMMAND test_unit ${CMAKE_SOURCE_DIR}/pseudos)

@@ -10,7 +10,7 @@ B2-Aluminiden NiAl und FeAl, aber allgemein für periodische Kristalle einsetzba
 |---|---|
 | Funktional | LSDA (Slater-Austausch + Perdew-Wang-92-Korrelation) und GGA-PBE, jeweils kollinear spinpolarisiert; Gradiententerme auf dem Gitter (White-Bird) und in den PAW-Kugeln |
 | Rumpf-Valenz | PAW nach Blöchl in der Formulierung von Mortensen, Hansen, Jacobsen (PRB 71, 035109): neutrale glatte Ladung mit Kompensationsladungen, keine Ewald-Summe |
-| Datensätze | PAW-XML (JTH-Tabelle v1.1, LDA-PW und GGA-PBE, skalarrelativistisch; Ni/Fe mit 3s3p-Semicore) in `pseudos/` |
+| Datensätze | PAW-XML (JTH-Tabelle v1.1, LDA-PW und GGA-PBE, skalarrelativistisch; Ni/Fe mit 3s3p-Semicore); nicht im Repository, `tools/fetch_pseudos.sh` lädt sie nach `pseudos/` |
 | Basis | ebene Wellen; grobes FFT-Gitter für Wellenfunktionen, dichte G-Kugel für Dichte, Kompensationsladung, Hartree und XC |
 | Brillouin-Zone | Monkhorst-Pack-Gitter, Reduktion mit der vollen Raumgruppe + Zeitumkehr; Dichte, PAW-Dichtematrizen und Kräfte werden symmetrisiert |
 | Besetzungen | Fermi-Dirac, Gauß, Methfessel-Paxton (1. Ordnung), Marzari-Vanderbilt ("cold"), Tetraedermethode mit Blöchl-Korrektur; optional festes Gesamtmoment |
@@ -29,10 +29,14 @@ Voraussetzungen: C++20-Compiler mit OpenMP, CMake ≥ 3.20, FFTW3, LAPACK/BLAS (
 
 ```sh
 # macOS (Homebrew): brew install gcc fftw cmake ninja
+tools/fetch_pseudos.sh           # PAW-Datensätze nach pseudos/ laden (einmalig; mit Prüfsummen)
 cmake --preset macos-gcc        # bzw. --preset linux
 cmake --build build
 ctest --test-dir build          # Unit- und Regressionstests
 ```
+
+Die PAW-Datensätze gehören nicht zum Repository (siehe „Lizenz und Datensätze"); Tests und Beispiele erwarten sie
+in `pseudos/`.
 
 ## Benutzung
 
@@ -372,6 +376,7 @@ Referenzen laufen lassen (z. B. mit einem Wrapper-Skript, das `mpirun -np 2 lsda
 ## Rechnen auf einem Server
 
 ```sh
+tools/fetch_pseudos.sh                                                  # PAW-Datensätze laden (einmalig)
 cmake --preset linux && cmake --build build && ctest --test-dir build   # ~1 min, muss fehlerfrei sein
 export OMP_NUM_THREADS=32 OMP_PROC_BIND=close OMP_PLACES=cores
 cd examples/defects
@@ -441,6 +446,11 @@ tests         Unit- und Regressionstests
 
 ## Lizenz und Datensätze
 
-Code: siehe `LICENSE`. Die PAW-Datensätze stammen aus der JTH-Tabelle
-(F. Jollet, M. Torrent, N. Holzwarth, Comput. Phys. Commun. 185, 1246 (2014)), bezogen über
-PseudoDojo (`ATOMPAW-LDA-JTHv1.1`).
+Der Quelltext steht unter der MIT-Lizenz (siehe `LICENSE`). Wird das Programm als Binärdatei weitergegeben, gilt
+für die Kombination mit FFTW dessen Lizenz (GPL).
+
+Die PAW-Datensätze sind **nicht** Teil dieses Repositorys und fallen nicht unter seine Lizenz. Sie stammen aus der
+JTH-Tabelle v1.1 (F. Jollet, M. Torrent, N. Holzwarth, Comput. Phys. Commun. 185, 1246 (2014)) und werden von
+`tools/fetch_pseudos.sh` aus den PseudoDojo-Repositories (`ATOMPAW-LDA-JTHv1.1`, `ATOMPAW-PBE-JTHv1.1`) in festen
+Revisionen geladen und über Prüfsummen kontrolliert. Diese Quellen nennen keine Lizenz; Nutzungs- und
+Weitergabebedingungen sind bei den Autoren zu erfragen. Bei Veröffentlichungen die oben genannte Arbeit zitieren.

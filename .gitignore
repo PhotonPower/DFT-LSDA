@@ -12,3 +12,5 @@ build-mpi/
 build-mpi-mock/
 *.phonons.forces
 *.neb.pos
+# PAW datasets are downloaded with tools/fetch_pseudos.sh (not covered by the license of this repository)
+pseudos/
